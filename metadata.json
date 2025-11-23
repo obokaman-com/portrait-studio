@@ -1,0 +1,5 @@
+{
+  "name": "AI Character Portrait Studio",
+  "description": "Upload photos of characters, provide an optional prompt, and generate a set of four professional, full-body studio portraits of them together.",
+  "requestFramePermissions": []
+}
