@@ -52,6 +52,7 @@ const App: React.FC = () => {
   // CACHE REFS for Optimization
   const lastUsedScenePromptRef = useRef<string>('');
   const cachedOptimizedPromptRef = useRef<string>('');
+  const lastGeneratedPayloadRef = useRef<{ imageParts: any[], fullPrompt: string } | null>(null);
 
   useEffect(() => {
     const checkKey = async () => {
@@ -406,7 +407,10 @@ const App: React.FC = () => {
       // We always reconstruct payload because photos/characters might have changed even if scene didn't
       const { imageParts, fullPrompt } = await constructPromptPayload(photos, optimizedPrompt);
       if (controller.signal.aborted) return;
-      
+
+      // Store payload for retry functionality
+      lastGeneratedPayloadRef.current = { imageParts, fullPrompt };
+
       setFullGeneratedPrompt(fullPrompt);
       setIsPromptOptimizing(false);
       setLoadingMessage(`Rendering ${numImages} portraits...`);
@@ -529,7 +533,7 @@ ${fullGeneratedPrompt}
   const navigateLightbox = (direction: 'next' | 'prev', e: React.MouseEvent) => {
       e.stopPropagation();
       if (selectedImageIndex === null) return;
-      
+
       const successImages = getSuccessImages();
       if (successImages.length === 0) return;
 
@@ -539,6 +543,46 @@ ${fullGeneratedPrompt}
           setSelectedImageIndex((selectedImageIndex - 1 + successImages.length) % successImages.length);
       }
   };
+
+  const handleRetryImage = useCallback(async (failedResult: GenerationResult) => {
+      if (!lastGeneratedPayloadRef.current) {
+          setGlobalError('Cannot retry: generation data not available. Please regenerate all.');
+          return;
+      }
+
+      const { imageParts, fullPrompt } = lastGeneratedPayloadRef.current;
+
+      // Find the index of the failed result to use the same creative variation
+      const resultIndex = generationResults.findIndex(r => r.id === failedResult.id);
+      if (resultIndex === -1) return;
+
+      const creativeVariations = [
+          '(Creative variation 1)', '(Creative variation 2, different camera angle)',
+          '(Creative variation 3, different expressions)', '(Creative variation 4, dynamic group pose)',
+          '(Creative variation 5, slightly different lighting)', '(Creative variation 6, cinematic style)',
+          '(Creative variation 7, candid moment)', '(Creative variation 8, formal portrait style)',
+      ];
+
+      const promptVariation = `${fullPrompt}\n${creativeVariations[resultIndex % creativeVariations.length]}`;
+
+      // Mark as pending
+      setGenerationResults(prev => prev.map(res =>
+          res.id === failedResult.id ? { ...res, status: 'pending', errorMessage: undefined } : res
+      ));
+
+      try {
+          const imageUrl = await generateSinglePortrait(imageParts, promptVariation, undefined, handleLogUsage);
+
+          setGenerationResults(prev => prev.map(res =>
+              res.id === failedResult.id ? { ...res, status: 'success', imageUrl } : res
+          ));
+      } catch (err) {
+          const errMsg = err instanceof Error ? err.message : "Unknown error";
+          setGenerationResults(prev => prev.map(res =>
+              res.id === failedResult.id ? { ...res, status: 'error', errorMessage: errMsg } : res
+          ));
+      }
+  }, [generationResults, handleLogUsage]);
 
   const isCharacterAnalysisPending = photos.some(p => p.characters.some(c => c.isDescriptionLoading));
   const totalCharacters = photos.reduce((acc, p) => acc + p.characters.length, 0);
@@ -948,8 +992,8 @@ ${fullGeneratedPrompt}
 
             {/* Content Area */}
             <div className="flex-1 overflow-y-auto p-4 lg:p-6 custom-scrollbar">
-                <ImageGrid 
-                    results={generationResults} 
+                <ImageGrid
+                    results={generationResults}
                     onImageClick={(result) => {
                          const successImages = getSuccessImages();
                          // Find the index of this result within the SUCCESS array, not the whole array
@@ -957,6 +1001,7 @@ ${fullGeneratedPrompt}
                          if(successIndex !== -1) setSelectedImageIndex(successIndex);
                     }}
                     onErrorClick={(result) => setSelectedError(result)}
+                    onRetry={handleRetryImage}
                 />
             </div>
 

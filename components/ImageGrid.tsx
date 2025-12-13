@@ -2,15 +2,16 @@
 import React from 'react';
 import { GenerationResult } from '../types';
 import Spinner from './Spinner';
-import { AlertTriangleIcon, CloseIcon } from './icons';
+import { AlertTriangleIcon, CloseIcon, RefreshIcon } from './icons';
 
 interface ImageGridProps {
   results: GenerationResult[];
   onImageClick?: (result: GenerationResult) => void;
   onErrorClick?: (result: GenerationResult) => void;
+  onRetry?: (result: GenerationResult) => void;
 }
 
-const ImageGrid: React.FC<ImageGridProps> = ({ results, onImageClick, onErrorClick }) => {
+const ImageGrid: React.FC<ImageGridProps> = ({ results, onImageClick, onErrorClick, onRetry }) => {
   // Use a masonry-like feel or just a clean responsive grid
   const gridClass = results.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 
                     results.length === 4 ? 'grid-cols-2' : 
@@ -30,14 +31,39 @@ const ImageGrid: React.FC<ImageGridProps> = ({ results, onImageClick, onErrorCli
 
         if (result.status === 'error') {
             return (
-                <div 
-                    key={result.id} 
-                    onClick={() => onErrorClick && onErrorClick(result)}
-                    className="aspect-square bg-[#1a0f0f] rounded-xl border border-red-500/20 flex flex-col items-center justify-center cursor-pointer hover:bg-[#251010] transition-colors group relative"
+                <div
+                    key={result.id}
+                    className="aspect-square bg-[#1a0f0f] rounded-xl border border-red-500/20 flex flex-col items-center justify-center group relative"
                 >
-                    <AlertTriangleIcon className="w-8 h-8 text-red-500 mb-2 opacity-80 group-hover:opacity-100" />
+                    <AlertTriangleIcon className="w-8 h-8 text-red-500 mb-2 opacity-80" />
                     <span className="text-xs text-red-400 font-medium">Generation Failed</span>
-                    <span className="text-[10px] text-red-500/50 mt-1">Click for details</span>
+
+                    <div className="flex gap-2 mt-3">
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onErrorClick && onErrorClick(result);
+                            }}
+                            className="text-[10px] text-red-400 hover:text-red-300 underline underline-offset-2 transition-colors"
+                        >
+                            Details
+                        </button>
+                        {onRetry && (
+                            <>
+                                <span className="text-red-500/30">•</span>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onRetry(result);
+                                    }}
+                                    className="text-[10px] text-sky-400 hover:text-sky-300 underline underline-offset-2 transition-colors flex items-center gap-1"
+                                >
+                                    <RefreshIcon className="w-3 h-3" />
+                                    Retry
+                                </button>
+                            </>
+                        )}
+                    </div>
                 </div>
             )
         }
