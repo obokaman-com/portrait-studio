@@ -94,10 +94,10 @@ export async function generateSinglePortrait(
           imageSize: "1K", // Gemini 3 Pro supports high res
         },
         safetySettings: [
-          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-          { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-          { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
         ],
       },
     });
@@ -119,19 +119,49 @@ export async function generateSinglePortrait(
 
     const candidate = response.candidates?.[0];
 
-    // Check Block Reasons
+    // Check if the PROMPT itself was blocked
     if (response.promptFeedback?.blockReason) {
-       throw new Error(`Request Blocked (${response.promptFeedback.blockReason}).\nSafety filters blocked this request.`);
+       const blockReason = response.promptFeedback.blockReason;
+       const safetyRatings = response.promptFeedback.safetyRatings || [];
+
+       // Find which category triggered the block
+       const triggered = safetyRatings
+         .filter((rating: any) => rating.probability && rating.probability !== 'NEGLIGIBLE')
+         .map((rating: any) => `${rating.category} (${rating.probability})`)
+         .join(', ');
+
+       const details = triggered ? `\n\nTriggered filters: ${triggered}` : '';
+       throw new Error(`Prompt Blocked: ${blockReason}${details}\n\nThe input prompt violated safety policies. Try rephrasing your scene description.`);
     }
 
+    // Check if the RESPONSE generation failed
     if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
         const reason = candidate.finishReason;
-        let friendlyMsg = `Generation Failed (${reason})`;
+        let friendlyMsg = `Generation Failed: ${reason}`;
 
-        if (reason === 'SAFETY') friendlyMsg = "Blocked by Safety Filters (Content Policy).";
-        else if (reason === 'RECITATION') friendlyMsg = "Blocked by Copyright.";
+        if (reason === 'SAFETY') {
+            // Extract detailed safety rating info
+            const safetyRatings = candidate.safetyRatings || [];
+            const triggered = safetyRatings
+              .filter((rating: any) => rating.probability && rating.probability !== 'NEGLIGIBLE' && rating.probability !== 'LOW')
+              .map((rating: any) => `${rating.category}: ${rating.probability}`)
+              .join('\n');
+
+            friendlyMsg = "Blocked by Safety Filters";
+            if (triggered) {
+                friendlyMsg += `\n\nDetected issues:\n${triggered}\n\nTry modifying your scene description or character details.`;
+            } else {
+                friendlyMsg += "\n\nThe generated content was flagged by safety policies.";
+            }
+        }
+        else if (reason === 'RECITATION') {
+            friendlyMsg = "Blocked by Copyright Protection\n\nThe model detected potential copyrighted content. Try using more generic descriptions.";
+        }
         else if (reason === 'IMAGE_OTHER' || reason === 'OTHER') {
-            friendlyMsg = "Policy Restriction.\nThe model refused to generate this specific image. This often happens with real person likenesses (deepfake protection) or child safety filters. Try changing the prompt slightly.";
+            friendlyMsg = "Generation Refused (Policy Restriction)\n\nThis often happens with:\n• Real person likenesses (deepfake protection)\n• Child safety filters\n• Restricted scenarios\n\nTry modifying your prompt or using different reference photos.";
+        }
+        else if (reason === 'MAX_TOKENS' || reason === 'LENGTH') {
+            friendlyMsg = "Generation incomplete: output too long.\n\nTry simplifying your prompt.";
         }
 
         throw new Error(friendlyMsg);
