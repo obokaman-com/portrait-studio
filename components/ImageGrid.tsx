@@ -30,6 +30,9 @@ const ImageGrid: React.FC<ImageGridProps> = ({ results, onImageClick, onErrorCli
         }
 
         if (result.status === 'error') {
+            const retryLabel = result.isQuotaError ? 'Retry with Flash' : 'Retry';
+            const retryColor = result.isQuotaError ? 'text-yellow-400 hover:text-yellow-300' : 'text-sky-400 hover:text-sky-300';
+
             return (
                 <div
                     key={result.id}
@@ -56,10 +59,11 @@ const ImageGrid: React.FC<ImageGridProps> = ({ results, onImageClick, onErrorCli
                                         e.stopPropagation();
                                         onRetry(result);
                                     }}
-                                    className="text-[10px] text-sky-400 hover:text-sky-300 underline underline-offset-2 transition-colors flex items-center gap-1"
+                                    className={`text-[10px] ${retryColor} underline underline-offset-2 transition-colors flex items-center gap-1`}
+                                    title={result.isQuotaError ? 'Retry using Gemini 2.5 Flash to save quota' : 'Retry generation'}
                                 >
                                     <RefreshIcon className="w-3 h-3" />
-                                    Retry
+                                    {retryLabel}
                                 </button>
                             </>
                         )}

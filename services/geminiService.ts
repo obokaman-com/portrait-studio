@@ -34,7 +34,8 @@ const cleanError = (error: any): Error => {
        "You have reached the request limit for your API key or Google Cloud Project.\n\n" +
        "• Check your Billing status in Google Cloud Console.\n" +
        "• You may have hit the free tier limits (RPM/TPM).\n" +
-       "• Wait a few minutes before trying again."
+       "• Wait a few minutes before trying again.\n\n" +
+       "Original error: " + msg
      );
   }
 
@@ -69,10 +70,11 @@ const cleanError = (error: any): Error => {
 }
 
 export async function generateSinglePortrait(
-    imageParts: Part[], 
-    prompt: string, 
+    imageParts: Part[],
+    prompt: string,
     signal?: AbortSignal,
-    onLogUsage?: UsageLogger
+    onLogUsage?: UsageLogger,
+    modelOverride?: string
 ): Promise<string> {
   if (signal?.aborted) {
     throw new Error("Cancelled");
@@ -80,19 +82,22 @@ export async function generateSinglePortrait(
 
   const ai = getAI();
   const textPart = { text: prompt };
-  const modelName = 'gemini-3-pro-image-preview';
+  const modelName = modelOverride || 'gemini-3-pro-image-preview';
+
+  // Flash model uses simpler config (doesn't support imageSize)
+  const isFlashModel = modelName.includes('flash');
+  const imageConfig = isFlashModel
+    ? { aspectRatio: "3:4" } // Flash: only aspectRatio
+    : { aspectRatio: "3:4", imageSize: "1K" }; // Pro: full config
 
   try {
     const response = await ai.models.generateContent({
-      model: modelName, // KEEPING PRO FOR IMAGE GENERATION QUALITY
+      model: modelName,
       contents: {
         parts: [...imageParts, textPart],
       },
       config: {
-        imageConfig: {
-          aspectRatio: "3:4", // Optimized for portraits (taller)
-          imageSize: "1K", // Gemini 3 Pro supports high res
-        },
+        imageConfig,
         safetySettings: [
           { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
           { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },

@@ -438,9 +438,10 @@ const App: React.FC = () => {
                     return;
                 }
                 const errMsg = err instanceof Error ? err.message : "Unknown error";
-                setGenerationResults(prev => prev.map(res => 
-                    res.id === placeholder.id 
-                    ? { ...res, status: 'error', errorMessage: errMsg } 
+                const isQuotaError = errMsg.includes('429') || errMsg.includes('Quota Exceeded') || errMsg.includes('RESOURCE_EXHAUSTED');
+                setGenerationResults(prev => prev.map(res =>
+                    res.id === placeholder.id
+                    ? { ...res, status: 'error', errorMessage: errMsg, isQuotaError }
                     : res
                 ));
             });
@@ -564,23 +565,27 @@ ${fullGeneratedPrompt}
       const variationIndex = Math.min(retryCount + 1, safetyMitigationVariations.length - 1);
       const promptVariation = `${fullPrompt}${safetyMitigationVariations[variationIndex]}`;
 
+      // Use Flash model if original error was quota-related
+      const modelToUse = failedResult.isQuotaError ? 'gemini-2.5-flash-image' : undefined;
+
       // Mark as pending and increment retry count
       setGenerationResults(prev => prev.map(res =>
           res.id === failedResult.id
-              ? { ...res, status: 'pending', errorMessage: undefined, retryCount: retryCount + 1 } as any
+              ? { ...res, status: 'pending', errorMessage: undefined, retryCount: retryCount + 1, isQuotaError: false } as any
               : res
       ));
 
       try {
-          const imageUrl = await generateSinglePortrait(imageParts, promptVariation, undefined, handleLogUsage);
+          const imageUrl = await generateSinglePortrait(imageParts, promptVariation, undefined, handleLogUsage, modelToUse);
 
           setGenerationResults(prev => prev.map(res =>
               res.id === failedResult.id ? { ...res, status: 'success', imageUrl } : res
           ));
       } catch (err) {
           const errMsg = err instanceof Error ? err.message : "Unknown error";
+          const isQuotaError = errMsg.includes('429') || errMsg.includes('Quota Exceeded') || errMsg.includes('RESOURCE_EXHAUSTED');
           setGenerationResults(prev => prev.map(res =>
-              res.id === failedResult.id ? { ...res, status: 'error', errorMessage: errMsg } : res
+              res.id === failedResult.id ? { ...res, status: 'error', errorMessage: errMsg, isQuotaError } : res
           ));
       }
   }, [generationResults, handleLogUsage]);

@@ -18,6 +18,7 @@ export interface GenerationResult {
   status: 'pending' | 'success' | 'error' | 'cancelled';
   imageUrl?: string;
   errorMessage?: string;
+  isQuotaError?: boolean; // Flag to indicate 429/quota errors
 }
 
 export interface UsageLog {
