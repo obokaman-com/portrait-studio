@@ -1,4 +1,3 @@
-
 import React from 'react';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -10,7 +9,7 @@ const Button: React.FC<ButtonProps> = ({ children, className, ...props }) => {
     <button
       {...props}
       className={`
-        relative overflow-hidden group flex items-center justify-center px-6 py-3 border border-transparent 
+        relative group flex items-center justify-center px-6 py-3 border border-transparent 
         text-sm font-semibold rounded-full text-white
         bg-gradient-to-r from-purple-600 to-sky-600
         hover:from-purple-500 hover:to-sky-500
@@ -19,8 +18,12 @@ const Button: React.FC<ButtonProps> = ({ children, className, ...props }) => {
         ${className}
       `}
     >
-      {/* Subtle shine effect overlay */}
-      <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/10 to-transparent z-0" />
+      {/* Shimmer Container - Clipped inside the rounded pill shape */}
+      <div className="absolute inset-0 rounded-full overflow-hidden z-0 pointer-events-none">
+          <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+      </div>
+
+      {/* Content */}
       <span className="relative z-10 flex items-center justify-center w-full">{children}</span>
     </button>
   );

@@ -61,3 +61,35 @@ export const AlertTriangleIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props
     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
   </svg>
 );
+
+// Updated "Portrait OboStudio" Logo - Disintegrating Ring
+export const OboLogo: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+    <svg {...props} viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <linearGradient id="obo_gradient" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+                <stop stopColor="#9333ea" /> {/* Purple-600 */}
+                <stop offset="1" stopColor="#0ea5e9" /> {/* Sky-500 */}
+            </linearGradient>
+        </defs>
+        
+        {/* Main Ring - Open at Top Right (approx 1:30 position) */}
+        {/* Path starts at ~2:30 (15deg) and goes counter-clockwise to ~12:00 (-90deg) */}
+        {/* Center 20,20. Radius 14. */}
+        <path 
+            d="M 33.52 23.63 A 14 14 0 1 1 27 7.86" 
+            stroke="url(#obo_gradient)" 
+            strokeWidth="5" 
+            strokeLinecap="butt"
+        />
+
+        {/* Disintegrating Pixels - Top Right Quadrant */}
+        {/* Pixel 1: The 'cut' piece */}
+        <rect x="27.5" y="5.5" width="5" height="5" fill="url(#obo_gradient)" />
+        
+        {/* Pixel 2: Floating away */}
+        <rect x="34" y="2" width="4" height="4" fill="url(#obo_gradient)" opacity="0.9" />
+        
+        {/* Pixel 3: Further out */}
+        <rect x="35" y="9" width="3" height="3" fill="url(#obo_gradient)" opacity="0.8" />
+    </svg>
+);

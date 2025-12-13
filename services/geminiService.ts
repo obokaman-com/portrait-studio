@@ -1,5 +1,7 @@
-import { GoogleGenAI, Part, Type } from "@google/genai";
+
+import { GoogleGenAI, Part, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { UploadedPhoto, CharacterDetail } from '../types';
+import { resizeImageToBase64 } from "../utils/fileUtils";
 
 // Helper to get a fresh AI instance with the current API key
 const getAI = () => {
@@ -33,27 +35,21 @@ const cleanError = (error: any): Error => {
   }
 
   // 3. Handle raw JSON dumps (common with SDK errors)
-  // e.g. "{\"error\":{\"code\":429, ...}}"
   if (msg.trim().startsWith('{')) {
       try {
          const parsed = JSON.parse(msg);
-         
-         // Extract nested error message
          if (parsed.error) {
              const innerMsg = parsed.error.message || JSON.stringify(parsed.error);
-             
-             // Recursively check if the inner message is a known code
              if (parsed.error.code === 429 || parsed.error.status === 'RESOURCE_EXHAUSTED') {
                  return cleanError(new Error("RESOURCE_EXHAUSTED"));
              }
              if (innerMsg.includes('safety')) {
                  return new Error("Blocked by Safety Filters.\nThe content was flagged by safety settings.");
              }
-             
              return new Error(`API Error: ${innerMsg}`);
          }
       } catch (e) {
-         // If JSON parse fails, fall back to returning the original cleaned string
+         // Fallback
       }
   }
 
@@ -70,15 +66,21 @@ export async function generateSinglePortrait(imageParts: Part[], prompt: string,
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview', // Nano Banana Pro
+      model: 'gemini-3-pro-image-preview', // KEEPING PRO FOR IMAGE GENERATION QUALITY
       contents: {
         parts: [...imageParts, textPart],
       },
       config: {
         imageConfig: {
-          aspectRatio: "1:1",
-          imageSize: "1K",
+          aspectRatio: "3:4", // Optimized for portraits (taller)
+          imageSize: "1K", // Gemini 3 Pro supports high res
         },
+        safetySettings: [
+          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+          { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+          { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+        ],
       },
     });
 
@@ -88,90 +90,69 @@ export async function generateSinglePortrait(imageParts: Part[], prompt: string,
 
     const candidate = response.candidates?.[0];
 
-    // --- IMPROVED ERROR HANDLING ---
-    
-    // 1. Check for Prompt Feedback (Request blocked before processing)
+    // Check Block Reasons
     if (response.promptFeedback?.blockReason) {
-       const reason = response.promptFeedback.blockReason;
-       throw new Error(`Request Blocked (${reason}).\nThe safety filters blocked this prompt before generation started. Please modify your prompt to be less sensitive.`);
+       throw new Error(`Request Blocked (${response.promptFeedback.blockReason}).\nSafety filters blocked this request.`);
     }
 
-    // 2. Check for Finish Reason (Generation stopped/blocked)
     if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
         const reason = candidate.finishReason;
         let friendlyMsg = `Generation Failed (${reason})`;
 
-        if (reason === 'SAFETY') {
-            friendlyMsg = "Blocked by Safety Filters.\nThe model detected sensitive content in the prompt or reference images (e.g. violence, explicit material, or unsafe situations).";
-        } else if (reason === 'OTHER' || reason === 'IMAGE_OTHER') {
-            friendlyMsg = "Blocked by Content Policy.\nThe model refused to generate this image due to Trust & Safety policies. Common causes include:\n\n• Photorealistic depictions of children or minors.\n• Named celebrities or public figures.\n• Copyrighted characters.\n• Potential identity risks (Deepfake prevention).\n\nTry removing names of real people or using broader descriptions.";
-        } else if (reason === 'RECITATION') {
-            friendlyMsg = "Blocked by Copyright.\nThe generation closely resembles copyrighted material.";
+        if (reason === 'SAFETY') friendlyMsg = "Blocked by Safety Filters (Content Policy).";
+        else if (reason === 'RECITATION') friendlyMsg = "Blocked by Copyright.";
+        else if (reason === 'IMAGE_OTHER' || reason === 'OTHER') {
+            friendlyMsg = "Policy Restriction.\nThe model refused to generate this specific image. This often happens with real person likenesses (deepfake protection) or child safety filters. Try changing the prompt slightly.";
         }
 
         throw new Error(friendlyMsg);
     }
 
-    // 3. Validate Content Parts
-    const content = candidate?.content;
-    const parts = content?.parts;
-
+    // Extract Image
+    const parts = candidate?.content?.parts;
     if (!parts || !Array.isArray(parts) || parts.length === 0) {
-      // Fallback generic error if no finishReason was provided but parts are empty
-      console.error("Empty response structure:", JSON.stringify(response, null, 2));
-      throw new Error("The model returned an empty response without a specific error code. This may be a temporary service glitch.");
+      throw new Error("Empty response from model.");
     }
     
-    // Iterate through parts to find the image
     for (const part of parts) {
       if (part.inlineData) {
           return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
       }
     }
 
-    // If we have text but no image (unlikely for image models, but possible)
     const textResponse = response.text;
     if (textResponse) {
-      throw new Error(`No image generated. Model message: "${textResponse.trim()}"`);
+      throw new Error(`No image generated. Message: "${textResponse.trim()}"`);
     }
 
-    throw new Error("Failed to extract image data from the response.");
+    throw new Error("Failed to extract image data.");
 
   } catch (error: any) {
-    // If it was cancelled during the await, ensure we throw "Cancelled"
-    if (signal?.aborted) {
-        throw new Error("Cancelled");
-    }
-    // Clean up raw API errors
+    if (signal?.aborted) throw new Error("Cancelled");
     throw cleanError(error);
   }
 }
 
 export async function analyzePhotoForCharacters(imagePart: Part, fileName: string): Promise<Omit<CharacterDetail, 'id' | 'isDescriptionLoading'>[]> {
   const ai = getAI();
-  const cleanFileName = fileName.replace(/\.[^/.]+$/, ""); // Remove file extension
   
-  // OPTIMIZED PROMPT FOR SAFETY & CLARITY
-  // Explicitly instructs to avoid proper names of celebrities to prevent Safety blocks later.
-  const prompt = `Analyze this photo to identify every distinct person visible. For each person, create a detailed VISUAL description suitable for an image generation prompt.
+  // OPTIMIZATION: Use Flash for analysis. It's faster, cheaper, and excellent at description.
+  const prompt = `Act as a casting director. Analyze this photo to identify every distinct person.
+  Create a concise but VISUALLY PRECISE description for a text-to-image generator.
   
-  IMPORTANT RULES:
-  1. If the person looks like a celebrity or public figure, DO NOT use their real name. Instead, describe their physical appearance (e.g., "a middle-aged man with short salt-and-pepper hair and a beard").
-  2. Use neutral terms for age (e.g., "young person" instead of "child" or "kid") to avoid safety filter triggers.
-  3. Focus on permanent features: hair style/color, facial structure, skin tone, eye color.
+  CRITICAL INSTRUCTIONS:
+  1. DO NOT name celebrities. Focus strictly on physical facial geometry and distinctive features.
+  2. Capture IMPERFECTIONS: Mention things like "freckles", "slight asymmetry", "weathered skin", or "messy hair". This adds realism.
+  3. Describe clothing textures (e.g., "ribbed cotton", "worn leather").
+  4. Ignore background. Focus on the Subject.
   
-  Use the filename hint ONLY if it doesn't look like a celebrity name: "${cleanFileName}".
-  
-  Your output must be a JSON array of objects, where each object has 'name' (use a generic placeholder like "Subject 1" if unsure) and 'description' keys.`;
+  Output JSON array with 'name' (generic) and 'description'.`;
 
   try {
     const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview', // Gemini 3 Pro for advanced reasoning
+        model: 'gemini-2.5-flash', // Switched to Flash for cost/speed
         contents: {
-        parts: [
-            imagePart,
-            { text: prompt }
-        ],
+        parts: [imagePart, { text: prompt }],
         },
         config: {
         responseMimeType: 'application/json',
@@ -189,21 +170,12 @@ export async function analyzePhotoForCharacters(imagePart: Part, fileName: strin
         }
     });
 
-    const jsonText = response.text.trim();
-    const parsed = JSON.parse(jsonText);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
-    }
-    // Handle cases where the model returns a valid but empty array, or other non-array JSON
-    return [{ name: 'Person 1', description: 'No distinct person found, please describe manually.' }];
+    const parsed = JSON.parse(response.text.trim());
+    return (Array.isArray(parsed) && parsed.length > 0) ? parsed : [{ name: 'Subject 1', description: 'Analysis unclear.' }];
   } catch (e: any) {
-    console.error("Failed to parse JSON response for character analysis:", e);
-    // If it's a quota error, throw it so the UI shows it
-    if (String(e).includes('429') || String(e).includes('RESOURCE_EXHAUSTED')) {
-        throw cleanError(e);
-    }
-    // Otherwise fallback
-    return [{ name: 'Person 1', description: 'AI analysis failed. Please describe the character manually.' }];
+    console.error("Analysis failed:", e);
+    if (String(e).includes('429')) throw cleanError(e);
+    return [{ name: 'Subject 1', description: 'AI analysis failed.' }];
   }
 }
 
@@ -211,16 +183,20 @@ export async function optimizePrompt(userPrompt: string): Promise<string> {
    const ai = getAI();
    try {
     const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview', // Gemini 3 Pro for advanced prompt engineering
-        contents: `You are a professional photographer's assistant. Rewrite the user's request into a high-quality "Photographic Brief".
+        model: 'gemini-2.5-flash', // Switched to Flash
+        contents: `Act as a Director of Photography for a high-budget film. Rewrite the user's scene description into a "Cinematography Brief".
         
-        Rules:
-        1. Keep it concise but descriptive.
-        2. Add technical details: "Shot on 85mm lens, f/1.8, soft studio lighting, 8k resolution".
-        3. Replace any specific celebrity names with physical descriptions to ensure safety compliance.
-        4. Output ONLY the rewritten prompt.
+        Style Guide:
+        - Use terminology like "Kodak Portra 400", "Arri Alexa", "85mm prime lens", "f/1.8", "soft volumetric lighting".
+        - Emphasize TEXTURE: "film grain", "sharp focus on eyes", "atmospheric depth".
+        - Avoid generic words like "beautiful" or "cool". Be technical and sensory.
         
-        User's request: "${userPrompt}"`,
+        CRITICAL OUTPUT RULE: 
+        - Output ONLY the rewritten brief text. 
+        - Do NOT write "Here is the brief" or "Certainly". 
+        - Just return the description.
+        
+        User Input: "${userPrompt}"`,
       });
       return response.text.trim();
    } catch (error) {
@@ -232,19 +208,12 @@ export async function generateRandomScenePrompt(): Promise<string> {
     const ai = getAI();
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-3-pro-preview',
-            contents: `Generate a single, creative, and highly descriptive "scene and style" prompt for a professional portrait photoshoot. 
+            model: 'gemini-2.5-flash', // Switched to Flash
+            contents: `Generate a short, evocative description for a portrait setting.
+            Focus on lighting and mood (e.g., "Golden hour in a dusty library", "Neon noir rain", "Studio chiaroscuro").
+            Do not mention people. Just the scene.
             
-            Requirements:
-            - Focus on PHOTOREALISM (lighting, environment, camera specs).
-            - Be evocative but concise (2-3 sentences).
-            - Do NOT mention any characters or people (the user will add them).
-            - Do NOT use introductions like "Here is a prompt". Just output the prompt text.
-            
-            Examples of style:
-            - "A sunlit industrial loft with floor-to-ceiling windows, dust motes dancing in the golden hour light, shot on 35mm film with soft bokeh."
-            - "A neon-lit Tokyo street at night, raining, reflections on the wet pavement, cinematic teal and orange color grading, depth of field."
-            - "A high-fashion editorial studio set with minimal geometric shapes, stark dramatic shadows, and rim lighting."`,
+            OUTPUT RULE: Return ONLY the scene description text. No chatter.`,
         });
         return response.text.trim();
     } catch (error) {
@@ -252,23 +221,64 @@ export async function generateRandomScenePrompt(): Promise<string> {
     }
 }
 
-// Function to construct the prompt and image parts without generating
+export async function generateDynamicScenario(theme: string, numCharacters: number): Promise<string> {
+    const ai = getAI();
+    const countStr = numCharacters === 1 ? "a solo portrait" : `a group photo of ${numCharacters} people`;
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash', // Switched to Flash
+            contents: `Act as a Bold Creative Director. Write a highly detailed image generation prompt for ${countStr} based on the request: "${theme}".
+
+            CRITICAL INSTRUCTIONS FOR SPECIFICITY:
+            1. BE BOLD AND SPECIFIC. Do NOT use generic terms like "a sci-fi movie" or "a magazine cover".
+            2. USE REAL NAMES AND REFERENCES for context (not for the people, but for the world/setting).
+               
+               - MOVIE SET: Pick a SPECIFIC FILM (e.g. "On the set of Star Wars: A New Hope", "Filming the lobby scene in The Grand Budapest Hotel", "On the deck of the Pearl in Pirates of the Caribbean").
+               - TIME TRAVEL: Pick a SPECIFIC HISTORICAL MOMENT (e.g. "Woodstock 1969 Crowd", "Signing the Declaration of Independence", "Victory Day in Times Square 1945", "The Court of Louis XIV").
+               - POP CULTURE: Pick a SPECIFIC SHOW/GAME (e.g. "Sitting on the Iron Throne in Game of Thrones", "In the Central Perk coffee shop from Friends", "Wearing Vault 101 suits from Fallout").
+               - MAGAZINE COVER: Pick a SPECIFIC MAGAZINE BRAND and describe its iconic layout. (e.g. "TIME Person of the Year with the red border", "National Geographic Portrait with yellow border", "Vogue September Issue Cover", "Rolling Stone Rock Star Cover").
+               - COSPLAY: Pick a SPECIFIC FRANCHISE (e.g. "Dressed as members of the Justice League", "Cosplaying as Mario Kart characters", "Dressed as Hogwarts students").
+               - IMPOSSIBLE: Pick a SPECIFIC SURREAL CONCEPT (e.g. "Having a tea party on the ceiling", "Inside a giant lava lamp", "Picnic on the rings of Saturn").
+               - FINE ART: Pick a SPECIFIC MASTERPIECE style (e.g. "Inside Van Gogh's Starry Night", "Posed like American Gothic", "In the style of a Renaissance oil painting").
+               - ALBUM COVER: Pick a SPECIFIC ICONIC ALBUM (e.g. "Walking across Abbey Road like The Beatles", "In the swimming pool from Nirvana's Nevermind", "Queen II Bohemian Rhapsody shadowy pose").
+
+            3. NPCs/CAMEOS: If the scene implies interaction, include the famous characters (NPCs) in the description.
+            4. DETAILS: Describe the specific costumes, props, and lighting.
+            
+            OUTPUT FORMAT RULES:
+            - Return ONLY the final prompt description.
+            - Do NOT include conversational filler like "Here is your prompt", "Alright", "Sure".
+            - Do NOT use markdown bolding for the whole text.
+            
+            Desired Output Format:
+            "[Context/Location/Brand], [Specific Action/Interaction], [Costume Details], [Lighting/Camera style]."
+            
+            Keep it under 60 words.`,
+        });
+        return response.text.trim();
+    } catch (error) {
+        throw cleanError(error);
+    }
+}
+
 export async function constructPromptPayload(
   photos: UploadedPhoto[],
   scenePrompt: string
 ): Promise<{ imageParts: Part[], fullPrompt: string }> {
 
+  // OPTIMIZATION: Resize images before creating parts.
   const imageParts: Part[] = await Promise.all(photos.map(async photo => {
-    const base64 = await (new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(photo.file);
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = error => reject(error);
-    }));
+    // We utilize the optimized resizing function here
+    const base64WithPrefix = await resizeImageToBase64(photo.file, 1536);
+    
+    // Remove "data:image/xyz;base64," prefix for the API
+    const base64Data = base64WithPrefix.split(',')[1];
+    
     return {
       inlineData: {
         mimeType: photo.file.type,
-        data: base64.split(',')[1],
+        data: base64Data,
       }
     }
   }));
@@ -278,32 +288,31 @@ export async function constructPromptPayload(
   );
 
   const inputAssets = photos.map((photo, index) =>
-    `[IMAGE ${index + 1}: Reference]`
-  ).join('\n');
+    `[REF_IMG_${index + 1}]`
+  ).join(' ');
 
   const characterManifest = allCharacters.map(char => 
-    `---\n**Subject: ${char.name}**\n*   **Ref:** Image ${char.photoIndex + 1}\n*   **Visuals:** ${char.description}`
+    `Subject (${char.name}) ID_REF_IMG_${char.photoIndex + 1}: ${char.description}`
   ).join('\n');
 
-  const fullPrompt = `**Context:**
-${inputAssets}
+  // MASTER PROMPT FOR REALISM
+  // We force "Raw Photo" aesthetics to avoid the "AI plastic" look.
+  const fullPrompt = `
+  **Medium:** Raw Analog Photography, 8k Resolution, highly detailed.
+  **Camera:** Shot on Fujifilm GFX 100S, 85mm f/1.2 lens.
+  **Quality:** Masterpiece, skin texture, subsurface scattering, natural pores, realistic eyes, cinematic lighting, soft shadows.
+  **Negative Prompt:** (plastic skin, cgi, 3d render, cartoon, smoothing, blurry, distorted).
+  
+  **Scene Description:**
+  ${scenePrompt}
 
-**Assignment: Professional Group Portrait**
-Generate a hyper-realistic group photograph containing exactly the characters listed below.
-Consistency is key: The faces and body types must strictly match the provided Reference Images and Visual descriptions.
-
-**Scene & Lighting:**
-${scenePrompt}
-
-**Cast List:**
-${characterManifest}
-
-**Technical Requirements:**
-- Full-body or 3/4 shot (unless specified otherwise).
-- High uniformity in lighting across all subjects.
-- Photorealistic textures (skin pores, fabric details).
-- No distorted faces or limbs.
-`;
+  **Subjects & References:**
+  (Ensure precise anatomical consistency with the reference images provided, specifically facial structure, skin texture, and key landmarks.)
+  ${characterManifest}
+  
+  **Composition:**
+  Group portrait, distinct separation, depth of field background, eye contact.
+  `;
 
   return { imageParts, fullPrompt };
 }
