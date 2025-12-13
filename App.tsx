@@ -6,7 +6,7 @@ import { generateSinglePortrait, analyzePhotoForCharacters, optimizePrompt, cons
 import FileUpload from './components/FileUpload';
 import ImageGrid from './components/ImageGrid';
 import Spinner from './components/Spinner';
-import { DownloadIcon, SparklesIcon, TrashIcon, WandIcon, PlusCircleIcon, CloseIcon, ChevronLeftIcon, ChevronRightIcon, AlertTriangleIcon, OboLogo, UploadIcon, ChartBarIcon } from './components/icons';
+import { DownloadIcon, SparklesIcon, TrashIcon, WandIcon, PlusCircleIcon, CloseIcon, ChevronLeftIcon, ChevronRightIcon, AlertTriangleIcon, OboLogo, UploadIcon, ChartBarIcon, GithubIcon } from './components/icons';
 import Button from './components/Button';
 import GenerationOptions from './components/GenerationOptions';
 import StyleSelector from './components/StyleSelector';
@@ -657,6 +657,16 @@ ${fullGeneratedPrompt}
           
           {/* Right Header Actions - API KEY STATUS */}
           <div className="flex items-center gap-4">
+             {/* GITHUB LINK */}
+             <a
+                href="https://github.com/obokaman-com/portrait-studio/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-gray-400 hover:text-white transition-colors p-2 rounded-full hover:bg-white/5"
+                title="View Source on GitHub"
+             >
+                 <GithubIcon className="w-5 h-5" />
+             </a>
             
              {/* STATS BUTTON */}
              <button 
@@ -1004,80 +1014,6 @@ ${fullGeneratedPrompt}
             Powered by <span className="text-gray-500 font-medium">Gemini 3 Pro</span> & <span className="text-gray-500 font-medium">Nano Banana</span>
          </p>
       </footer>
-
-      {/* --- USAGE LOGS MODAL --- */}
-      {showUsageLogs && (
-        <div 
-            className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={() => setShowUsageLogs(false)}
-        >
-            <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl max-w-2xl w-full p-6 relative shadow-2xl flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
-                 <div className="flex items-center justify-between mb-4 border-b border-white/5 pb-4">
-                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center text-green-500 border border-green-500/20">
-                            <ChartBarIcon className="w-5 h-5" />
-                        </div>
-                        <div>
-                            <h3 className="text-lg font-medium text-white">Session Usage</h3>
-                            <p className="text-xs text-gray-500">Estimated cost for this session based on public pricing.</p>
-                        </div>
-                     </div>
-                     <div className="text-right">
-                         <span className="block text-2xl font-bold text-white tracking-tight">
-                            ${usageLogs.reduce((acc, log) => acc + log.cost, 0).toFixed(4)}
-                         </span>
-                         <span className="text-[10px] text-gray-500 uppercase tracking-wider">Total Est. Cost</span>
-                     </div>
-                 </div>
-
-                 <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
-                     {usageLogs.length === 0 ? (
-                         <div className="text-center py-10 text-gray-600 text-sm">
-                             No usage recorded yet. Start generating!
-                         </div>
-                     ) : (
-                         <table className="w-full text-left text-xs text-gray-400">
-                             <thead className="text-[10px] uppercase text-gray-500 font-semibold border-b border-white/5 bg-white/5 sticky top-0">
-                                 <tr>
-                                     <th className="px-3 py-2 rounded-tl-lg">Time</th>
-                                     <th className="px-3 py-2">Action</th>
-                                     <th className="px-3 py-2">Model</th>
-                                     <th className="px-3 py-2 text-right">In / Out</th>
-                                     <th className="px-3 py-2 text-right rounded-tr-lg">Est. Cost</th>
-                                 </tr>
-                             </thead>
-                             <tbody className="divide-y divide-white/5">
-                                 {usageLogs.map((log) => (
-                                     <tr key={log.id} className="hover:bg-white/5 transition-colors">
-                                         <td className="px-3 py-3 font-mono text-gray-500">
-                                             {log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                                         </td>
-                                         <td className="px-3 py-3 text-white font-medium">{log.action}</td>
-                                         <td className="px-3 py-3 font-mono text-[10px] text-sky-400/80">{log.model.replace('gemini-', '')}</td>
-                                         <td className="px-3 py-3 text-right font-mono">
-                                             <span className="text-gray-300">{log.inputTokens}</span> <span className="text-gray-600">/</span> <span className="text-gray-300">{log.outputTokens}</span>
-                                         </td>
-                                         <td className="px-3 py-3 text-right font-bold text-white">
-                                             ${log.cost.toFixed(5)}
-                                         </td>
-                                     </tr>
-                                 ))}
-                             </tbody>
-                         </table>
-                     )}
-                 </div>
-                 
-                 <div className="mt-4 pt-4 border-t border-white/5 flex justify-end">
-                     <button 
-                        onClick={() => setShowUsageLogs(false)}
-                        className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-sm text-white transition-colors"
-                     >
-                        Close
-                     </button>
-                 </div>
-            </div>
-        </div>
-      )}
       
       {/* --- ERROR DETAIL MODAL --- */}
       {selectedError && (
