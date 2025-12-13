@@ -1,15 +1,18 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { UploadedPhoto, CharacterDetail, GenerationResult } from './types';
+import { UploadedPhoto, CharacterDetail, GenerationResult, UsageLog } from './types';
 import { resizeImageToBase64, createAndDownloadZip } from './utils/fileUtils';
-import { generateSinglePortrait, analyzePhotoForCharacters, optimizePrompt, constructPromptPayload, generateDynamicScenario } from './services/geminiService';
+import { generateSinglePortrait, analyzePhotoForCharacters, optimizePrompt, constructPromptPayload, generateDynamicScenario, setGlobalApiKey } from './services/geminiService';
 import FileUpload from './components/FileUpload';
 import ImageGrid from './components/ImageGrid';
 import Spinner from './components/Spinner';
-import { DownloadIcon, SparklesIcon, TrashIcon, WandIcon, PlusCircleIcon, CloseIcon, ChevronLeftIcon, ChevronRightIcon, AlertTriangleIcon, OboLogo, UploadIcon } from './components/icons';
+import { DownloadIcon, SparklesIcon, TrashIcon, WandIcon, PlusCircleIcon, CloseIcon, ChevronLeftIcon, ChevronRightIcon, AlertTriangleIcon, OboLogo, UploadIcon, ChartBarIcon } from './components/icons';
 import Button from './components/Button';
 import GenerationOptions from './components/GenerationOptions';
 import StyleSelector from './components/StyleSelector';
+
+// Track where the key came from for UI feedback
+type ApiKeySource = 'env' | 'storage' | 'studio' | null;
 
 const App: React.FC = () => {
   const [photos, setPhotos] = useState<UploadedPhoto[]>([]);
@@ -28,8 +31,17 @@ const App: React.FC = () => {
 
   const [numImages, setNumImages] = useState<2 | 4 | 8>(4);
   const [hasApiKey, setHasApiKey] = useState<boolean>(false);
+  const [apiKeySource, setApiKeySource] = useState<ApiKeySource>(null);
   const [isCheckingKey, setIsCheckingKey] = useState<boolean>(true);
   
+  // Usage Log State
+  const [usageLogs, setUsageLogs] = useState<UsageLog[]>([]);
+  const [showUsageLogs, setShowUsageLogs] = useState<boolean>(false);
+  
+  // API Key UI State
+  const [manualApiKey, setManualApiKey] = useState<string>('');
+  const [showManualInput, setShowManualInput] = useState<boolean>(false);
+
   // Lightbox State: Using Index instead of String for easier navigation
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
 
@@ -43,12 +55,39 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const checkKey = async () => {
-      try {
-        if ((window as any).aistudio && await (window as any).aistudio.hasSelectedApiKey()) {
+      // 1. Check Local Storage (Persistent User Entry) - PRIORITY over Env if user explicitly set it
+      const storedKey = localStorage.getItem('obo_gemini_key');
+      if (storedKey && storedKey.length > 0) {
+          setGlobalApiKey(storedKey);
           setHasApiKey(true);
+          setApiKeySource('storage');
+          setIsCheckingKey(false);
+          return;
+      }
+
+      // 2. Check AI Studio Environment AND .env
+      // In AI Studio, process.env.API_KEY is automatically populated. 
+      // We check for the window object to know if we should treat this as a "Studio" key (changeable) or a "Hardcoded" key (production).
+      const isAIStudio = (window as any).aistudio !== undefined;
+      
+      if (process.env.API_KEY && process.env.API_KEY.length > 0) {
+          setGlobalApiKey(process.env.API_KEY);
+          setHasApiKey(true);
+          // If we are in AI Studio, label it 'studio' so we show the "Change Project" button.
+          // Otherwise, it's a standard ENV variable (e.g. Vercel deployment).
+          setApiKeySource(isAIStudio ? 'studio' : 'env');
+          setIsCheckingKey(false);
+          return;
+      }
+
+      // 3. Fallback: Check AI Studio explicitly if env was empty (rare in studio, but possible)
+      try {
+        if (isAIStudio && await (window as any).aistudio.hasSelectedApiKey()) {
+          setHasApiKey(true);
+          setApiKeySource('studio');
         }
       } catch (e) {
-        console.error("Error checking API key:", e);
+        console.error("Error checking AI Studio API key:", e);
       } finally {
         setIsCheckingKey(false);
       }
@@ -83,30 +122,87 @@ const App: React.FC = () => {
   const handleSelectKey = async () => {
     try {
       if ((window as any).aistudio) {
+        // This opens the Google AI Studio project selector overlay
         await (window as any).aistudio.openSelectKey();
+        
+        // Note: AI Studio might require a reload to update process.env, 
+        // or it might update the context immediately. We set state to true to be safe.
         setHasApiKey(true);
+        setApiKeySource('studio');
       }
     } catch (e) {
       console.error("Error selecting API key:", e);
     }
   };
+  
+  const handleSaveManualKey = () => {
+      if (manualApiKey.trim().length > 0) {
+          localStorage.setItem('obo_gemini_key', manualApiKey.trim());
+          setGlobalApiKey(manualApiKey.trim());
+          setHasApiKey(true);
+          setApiKeySource('storage');
+      }
+  };
+  
+  const handleClearApiKey = () => {
+      localStorage.removeItem('obo_gemini_key');
+      setGlobalApiKey("");
+      setHasApiKey(false);
+      setApiKeySource(null);
+      // Force reload to clear any memory/env states
+      window.location.reload(); 
+  };
 
   const handleApiError = (err: any) => {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    if (errorMessage.includes('Requested entity was not found')) {
+    if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API_KEY is missing')) {
       setHasApiKey(false);
+      setApiKeySource(null);
       setGlobalError('Session expired or invalid API Key. Please select your key again.');
     } else {
       setGlobalError(errorMessage);
     }
   };
 
+  // --- LOGGING & COST CALCULATION ---
+  const handleLogUsage = useCallback((action: string, model: string, inputTokens: number, outputTokens: number) => {
+    // ESTIMATED PRICING (USD) - Based on public docs
+    // Flash 2.5: $0.075/1M input, $0.30/1M output
+    // Pro 3 (Preview): Using Pro 1.5 pricing as proxy or assuming higher tier.
+    // Pro 1.5: $3.50/1M input, $10.50/1M output
+    // Image Generation: Typically billed per image (~$0.04), not just tokens.
+    
+    let cost = 0;
+
+    if (model.includes('flash')) {
+        cost = (inputTokens / 1_000_000) * 0.075 + (outputTokens / 1_000_000) * 0.30;
+    } else if (model.includes('pro')) {
+        if (action.includes('Image') || model.includes('image')) {
+            // Rough estimation for Imagen/Gemini Image Generation: ~$0.04 per image
+            cost = 0.04; 
+        } else {
+            // Text logic
+            cost = (inputTokens / 1_000_000) * 3.50 + (outputTokens / 1_000_000) * 10.50;
+        }
+    }
+
+    const newLog: UsageLog = {
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date(),
+        action,
+        model,
+        inputTokens,
+        outputTokens,
+        cost
+    };
+
+    setUsageLogs(prev => [newLog, ...prev]);
+  }, []);
+
   // Helper to determine smart names
   const getSmartName = (fileName: string, globalIndex: number) => {
       const cleanName = fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
-      // Heuristic: If name looks like a generic camera dump (IMG, DSC, digits, too short), use Subject X
-      const isGenericFilename = /(^img|^dsc|^pic|^screenshot|^whatsapp|^video|\d{4,})/i.test(cleanName) || cleanName.length < 3;
-      
+      const isGenericFilename = /(^img|^dsc|^pic|^screenshot|^whatsapp|^video|^photo|^image|^untitled|\d{4,})/i.test(cleanName) || cleanName.length < 3;
       return isGenericFilename ? `Subject ${globalIndex + 1}` : cleanName;
   };
 
@@ -129,7 +225,6 @@ const App: React.FC = () => {
        try {
         // Initial Loading State with Smart Name
         const smartName = getSmartName(photo.file.name, runningCharCount);
-        // Increment for next file just in case, though usually 1 file = 1 person initially
         runningCharCount++; 
 
         setPhotos(prev => prev.map(p => p.id === photo.id ? { 
@@ -152,19 +247,16 @@ const App: React.FC = () => {
           },
         };
 
-        const describedCharacters = await analyzePhotoForCharacters(imagePart as any, photo.file.name);
+        const describedCharacters = await analyzePhotoForCharacters(imagePart as any, photo.file.name, handleLogUsage);
         
         // Preserve the smart name we calculated, don't let AI overwrite it with "Subject 1"
-        // unless we want to support multi-person detection naming (which is hard to map).
-        // For now, we assume if AI finds multiple, we append generic names, but for the first one, keep ours.
         const newCharacters: CharacterDetail[] = describedCharacters.map((char, index) => ({
           ...char,
           id: `${photo.id}-char-${index}`,
-          name: index === 0 ? smartName : `Subject ${runningCharCount + index}`, // Use smart name for primary, generic for others found
+          name: index === 0 ? smartName : `Subject ${runningCharCount + index}`, 
           isDescriptionLoading: false,
         }));
         
-        // Update running count if multiple people were found in one photo
         if (describedCharacters.length > 1) runningCharCount += (describedCharacters.length - 1);
 
         setPhotos(prev =>
@@ -251,7 +343,7 @@ const App: React.FC = () => {
       try {
           // Count total characters to give context to the AI
           const totalChars = photos.reduce((acc, p) => acc + p.characters.length, 0) || 1;
-          const generatedScenario = await generateDynamicScenario(scenarioTheme, totalChars);
+          const generatedScenario = await generateDynamicScenario(scenarioTheme, totalChars, handleLogUsage);
           setScenePrompt(generatedScenario);
       } catch (e) {
           console.error("Error generating scenario:", e);
@@ -303,7 +395,7 @@ const App: React.FC = () => {
           // Cache Miss - Call API
           setLoadingMessage('Optimizing scene prompt...');
           setIsPromptOptimizing(true);
-          optimizedPrompt = await optimizePrompt(scenePrompt);
+          optimizedPrompt = await optimizePrompt(scenePrompt, handleLogUsage);
           if (controller.signal.aborted) return;
           
           // Update Cache
@@ -330,7 +422,7 @@ const App: React.FC = () => {
       const promises = placeholders.map((placeholder, index) => {
           const promptVariation = `${fullPrompt}\n${creativeVariations[index % creativeVariations.length]}`;
           
-          return generateSinglePortrait(imageParts, promptVariation, controller.signal)
+          return generateSinglePortrait(imageParts, promptVariation, controller.signal, handleLogUsage)
             .then((imageUrl) => {
                 if (controller.signal.aborted) return;
                 setGenerationResults(prev => prev.map(res => 
@@ -378,7 +470,7 @@ const App: React.FC = () => {
          abortControllerRef.current = null;
       }
     }
-  }, [photos, scenePrompt, numImages]);
+  }, [photos, scenePrompt, numImages, handleLogUsage]);
   
   // --- UTILS FOR NAMING ---
   const generateBatchId = () => Math.random().toString(36).substring(2, 7); // 5 chars
@@ -465,6 +557,8 @@ ${fullGeneratedPrompt}
 
   // --- API Key Modal (Elegant Overlay) ---
   if (!hasApiKey) {
+    const isAIStudioEnv = (window as any).aistudio !== undefined;
+    
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
             <div className="bg-[#0f0f0f] border border-white/10 rounded-3xl max-w-md w-full p-8 text-center shadow-2xl relative overflow-hidden">
@@ -472,17 +566,69 @@ ${fullGeneratedPrompt}
                 <div className="w-16 h-16 bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-inner ring-1 ring-white/5">
                     <OboLogo className="w-10 h-10" />
                 </div>
-                <h1 className="text-2xl font-light text-white mb-2 tracking-wide">Studio Access</h1>
-                <p className="text-gray-400 mb-8 font-light leading-relaxed">
+                <h1 className="text-2xl font-light text-white mb-2 tracking-wide">Portrait OboStudio</h1>
+                <p className="text-gray-400 mb-6 font-light leading-relaxed">
                   Unlock the full potential of <span className="text-gray-200">Gemini 3 Pro</span>. 
                   Connect a billing-enabled Google Cloud project to begin.
                 </p>
-                <Button onClick={handleSelectKey} className="w-full py-4 text-base shadow-lg shadow-sky-900/20">
-                    Connect Project API Key
-                </Button>
-                <div className="mt-6 text-xs text-gray-600">
-                    <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="hover:text-gray-400 transition-colors">
-                        View Billing Documentation
+
+                <div className="space-y-4">
+                    {/* OPTION 1: AI STUDIO (If detected) */}
+                    {isAIStudioEnv && (
+                        <Button onClick={handleSelectKey} className="w-full py-4 text-base shadow-lg shadow-sky-900/20">
+                            Connect AI Studio Project
+                        </Button>
+                    )}
+
+                    {/* SEPARATOR (If both options available) */}
+                    {isAIStudioEnv && (
+                        <div className="relative py-2">
+                             <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-white/10"></span></div>
+                             <div className="relative flex justify-center"><span className="bg-[#0f0f0f] px-2 text-[10px] text-gray-500 uppercase tracking-widest">OR</span></div>
+                        </div>
+                    )}
+                    
+                    {/* OPTION 2: MANUAL INPUT */}
+                    {!showManualInput ? (
+                        <button 
+                            onClick={() => setShowManualInput(true)}
+                            className="text-sm text-gray-500 hover:text-sky-400 underline underline-offset-4 transition-colors"
+                        >
+                            Enter API Key manually
+                        </button>
+                    ) : (
+                        <div className="animate-fade-in space-y-3 bg-white/5 p-4 rounded-xl border border-white/5">
+                            <input 
+                                type="password" 
+                                placeholder="Paste your Gemini API Key"
+                                value={manualApiKey}
+                                onChange={(e) => setManualApiKey(e.target.value)}
+                                className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:border-sky-500 focus:outline-none placeholder-gray-600"
+                            />
+                            <Button 
+                                onClick={handleSaveManualKey} 
+                                disabled={!manualApiKey.trim()}
+                                className="w-full py-2 text-sm"
+                            >
+                                Save Key
+                            </Button>
+                            
+                            {/* Security Note */}
+                            <div className="p-3 bg-blue-900/10 border border-blue-500/10 rounded-lg flex gap-2 items-start text-left">
+                                <div className="mt-0.5"><div className="w-1.5 h-1.5 bg-blue-400 rounded-full" /></div>
+                                <p className="text-[10px] text-gray-400 leading-tight">
+                                    <strong className="text-gray-300">Security Note:</strong> Your API Key is stored locally in your browser (LocalStorage). 
+                                    It is used directly to communicate with Google's API and is never sent to any intermediate server.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div className="mt-6 text-xs text-gray-600 flex flex-col gap-1">
+                    <span>Don't have a key?</span>
+                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-sky-500 hover:text-sky-400 transition-colors underline">
+                        Get a Gemini API Key here
                     </a>
                 </div>
             </div>
@@ -507,6 +653,54 @@ ${fullGeneratedPrompt}
                 <h1 className="text-2xl font-bold text-white tracking-wide leading-none mb-1">Portrait OboStudio</h1>
                 <span className="text-[10px] text-gray-500 font-medium tracking-[0.14em] uppercase pl-0.5">Beyond the lens of reality</span>
             </div>
+          </div>
+          
+          {/* Right Header Actions - API KEY STATUS */}
+          <div className="flex items-center gap-4">
+            
+             {/* STATS BUTTON */}
+             <button 
+                onClick={() => setShowUsageLogs(true)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 text-gray-400 hover:text-white hover:bg-white/10 transition-colors text-[10px]"
+             >
+                <ChartBarIcon className="w-3 h-3" />
+                <span className="font-mono">
+                    ${usageLogs.reduce((acc, log) => acc + log.cost, 0).toFixed(4)}
+                </span>
+             </button>
+
+             {apiKeySource === 'storage' && (
+                 <button 
+                    onClick={handleClearApiKey}
+                    className="text-[10px] text-sky-400 hover:text-red-400 flex items-center gap-2 transition-colors border border-sky-500/20 hover:border-red-900/30 bg-sky-900/10 hover:bg-red-900/10 px-3 py-1.5 rounded-full"
+                    title="Disconnect custom API Key"
+                 >
+                     <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-sky-500"></span>
+                     </span>
+                     Browser Key Active (Reset)
+                 </button>
+             )}
+
+             {/* Standard ENV Key (e.g. Vercel) - Just an indicator */}
+             {apiKeySource === 'env' && (
+                 <div className="text-[10px] text-green-500 flex items-center gap-2 border border-green-500/20 bg-green-900/10 px-3 py-1.5 rounded-full cursor-help" title="API Key provided by Environment Variables">
+                     <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                     ENV Key Active
+                 </div>
+             )}
+
+             {/* Studio Key (AI Studio Detected) - Allows Changing */}
+             {apiKeySource === 'studio' && (
+                 <button 
+                     onClick={handleSelectKey}
+                     className="text-[10px] text-purple-400 hover:text-white flex items-center gap-2 border border-purple-500/20 hover:border-purple-500/40 bg-purple-900/10 hover:bg-purple-900/20 px-3 py-1.5 rounded-full transition-colors"
+                 >
+                     <span className="w-2 h-2 bg-purple-500 rounded-full"></span>
+                     Studio Project (Change)
+                 </button>
+             )}
           </div>
         </div>
       </header>
@@ -810,6 +1004,80 @@ ${fullGeneratedPrompt}
             Powered by <span className="text-gray-500 font-medium">Gemini 3 Pro</span> & <span className="text-gray-500 font-medium">Nano Banana</span>
          </p>
       </footer>
+
+      {/* --- USAGE LOGS MODAL --- */}
+      {showUsageLogs && (
+        <div 
+            className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setShowUsageLogs(false)}
+        >
+            <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl max-w-2xl w-full p-6 relative shadow-2xl flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+                 <div className="flex items-center justify-between mb-4 border-b border-white/5 pb-4">
+                     <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center text-green-500 border border-green-500/20">
+                            <ChartBarIcon className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <h3 className="text-lg font-medium text-white">Session Usage</h3>
+                            <p className="text-xs text-gray-500">Estimated cost for this session based on public pricing.</p>
+                        </div>
+                     </div>
+                     <div className="text-right">
+                         <span className="block text-2xl font-bold text-white tracking-tight">
+                            ${usageLogs.reduce((acc, log) => acc + log.cost, 0).toFixed(4)}
+                         </span>
+                         <span className="text-[10px] text-gray-500 uppercase tracking-wider">Total Est. Cost</span>
+                     </div>
+                 </div>
+
+                 <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
+                     {usageLogs.length === 0 ? (
+                         <div className="text-center py-10 text-gray-600 text-sm">
+                             No usage recorded yet. Start generating!
+                         </div>
+                     ) : (
+                         <table className="w-full text-left text-xs text-gray-400">
+                             <thead className="text-[10px] uppercase text-gray-500 font-semibold border-b border-white/5 bg-white/5 sticky top-0">
+                                 <tr>
+                                     <th className="px-3 py-2 rounded-tl-lg">Time</th>
+                                     <th className="px-3 py-2">Action</th>
+                                     <th className="px-3 py-2">Model</th>
+                                     <th className="px-3 py-2 text-right">In / Out</th>
+                                     <th className="px-3 py-2 text-right rounded-tr-lg">Est. Cost</th>
+                                 </tr>
+                             </thead>
+                             <tbody className="divide-y divide-white/5">
+                                 {usageLogs.map((log) => (
+                                     <tr key={log.id} className="hover:bg-white/5 transition-colors">
+                                         <td className="px-3 py-3 font-mono text-gray-500">
+                                             {log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                         </td>
+                                         <td className="px-3 py-3 text-white font-medium">{log.action}</td>
+                                         <td className="px-3 py-3 font-mono text-[10px] text-sky-400/80">{log.model.replace('gemini-', '')}</td>
+                                         <td className="px-3 py-3 text-right font-mono">
+                                             <span className="text-gray-300">{log.inputTokens}</span> <span className="text-gray-600">/</span> <span className="text-gray-300">{log.outputTokens}</span>
+                                         </td>
+                                         <td className="px-3 py-3 text-right font-bold text-white">
+                                             ${log.cost.toFixed(5)}
+                                         </td>
+                                     </tr>
+                                 ))}
+                             </tbody>
+                         </table>
+                     )}
+                 </div>
+                 
+                 <div className="mt-4 pt-4 border-t border-white/5 flex justify-end">
+                     <button 
+                        onClick={() => setShowUsageLogs(false)}
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-sm text-white transition-colors"
+                     >
+                        Close
+                     </button>
+                 </div>
+            </div>
+        </div>
+      )}
       
       {/* --- ERROR DETAIL MODAL --- */}
       {selectedError && (

@@ -19,3 +19,13 @@ export interface GenerationResult {
   imageUrl?: string;
   errorMessage?: string;
 }
+
+export interface UsageLog {
+  id: string;
+  timestamp: Date;
+  action: string; // e.g., "Analyze Photo", "Generate Image"
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+}

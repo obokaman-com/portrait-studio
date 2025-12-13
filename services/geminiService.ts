@@ -3,13 +3,25 @@ import { GoogleGenAI, Part, Type, HarmCategory, HarmBlockThreshold } from "@goog
 import { UploadedPhoto, CharacterDetail } from '../types';
 import { resizeImageToBase64 } from "../utils/fileUtils";
 
+// MUTABLE API KEY STORAGE
+// This allows the app to set the key at runtime (from LocalStorage or User Input)
+// if it's not present in the build-time environment variables.
+let dynamicApiKey = process.env.API_KEY || "";
+
+export const setGlobalApiKey = (key: string) => {
+  dynamicApiKey = key;
+};
+
 // Helper to get a fresh AI instance with the current API key
 const getAI = () => {
-  if (!process.env.API_KEY) {
-     throw new Error("API_KEY environment variable is not set. Please select an API key.");
+  if (!dynamicApiKey) {
+     throw new Error("API_KEY is missing. Please enter your Gemini API Key.");
   }
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  return new GoogleGenAI({ apiKey: dynamicApiKey });
 }
+
+// Type definition for the usage logger callback
+export type UsageLogger = (action: string, model: string, inputTokens: number, outputTokens: number) => void;
 
 // Helper to clean up raw API errors into human-readable messages
 const cleanError = (error: any): Error => {
@@ -56,17 +68,23 @@ const cleanError = (error: any): Error => {
   return new Error(msg);
 }
 
-export async function generateSinglePortrait(imageParts: Part[], prompt: string, signal?: AbortSignal): Promise<string> {
+export async function generateSinglePortrait(
+    imageParts: Part[], 
+    prompt: string, 
+    signal?: AbortSignal,
+    onLogUsage?: UsageLogger
+): Promise<string> {
   if (signal?.aborted) {
     throw new Error("Cancelled");
   }
 
   const ai = getAI();
   const textPart = { text: prompt };
+  const modelName = 'gemini-3-pro-image-preview';
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview', // KEEPING PRO FOR IMAGE GENERATION QUALITY
+      model: modelName, // KEEPING PRO FOR IMAGE GENERATION QUALITY
       contents: {
         parts: [...imageParts, textPart],
       },
@@ -86,6 +104,17 @@ export async function generateSinglePortrait(imageParts: Part[], prompt: string,
 
     if (signal?.aborted) {
       throw new Error("Cancelled");
+    }
+
+    // LOG USAGE
+    // Note: Image generation usually charges per image, but we log tokens if available or 0
+    if (onLogUsage) {
+        onLogUsage(
+            "Generate Portrait (Image)", 
+            modelName, 
+            response.usageMetadata?.promptTokenCount || 0,
+            response.usageMetadata?.candidatesTokenCount || 0
+        );
     }
 
     const candidate = response.candidates?.[0];
@@ -133,24 +162,28 @@ export async function generateSinglePortrait(imageParts: Part[], prompt: string,
   }
 }
 
-export async function analyzePhotoForCharacters(imagePart: Part, fileName: string): Promise<Omit<CharacterDetail, 'id' | 'isDescriptionLoading'>[]> {
+export async function analyzePhotoForCharacters(
+    imagePart: Part, 
+    fileName: string,
+    onLogUsage?: UsageLogger
+): Promise<Omit<CharacterDetail, 'id' | 'isDescriptionLoading'>[]> {
   const ai = getAI();
+  const modelName = 'gemini-2.5-flash';
   
-  // OPTIMIZATION: Use Flash for analysis. It's faster, cheaper, and excellent at description.
-  const prompt = `Act as a casting director. Analyze this photo to identify every distinct person.
-  Create a concise but VISUALLY PRECISE description for a text-to-image generator.
+  // OPTIMIZATION: Using Flash as requested. It's fast and effective for physical descriptions.
+  const prompt = `Analyze this photo to identify every distinct person.
+  Create a concise, purely PHYSICAL description for character consistency in image generation.
   
   CRITICAL INSTRUCTIONS:
-  1. DO NOT name celebrities. Focus strictly on physical facial geometry and distinctive features.
-  2. Capture IMPERFECTIONS: Mention things like "freckles", "slight asymmetry", "weathered skin", or "messy hair". This adds realism.
-  3. Describe clothing textures (e.g., "ribbed cotton", "worn leather").
-  4. Ignore background. Focus on the Subject.
+  1. IGNORE NON-PHYSICAL DETAILS: Do NOT describe clothing, background, lighting, camera angle, or pose. We need the person's inherent look (face, body), not their current context.
+  2. FOCUS ON ANATOMY: Describe facial structure, skin tone/texture, hair color/style, age, ethnicity, and distinctive marks (freckles, scars, moles).
+  3. BE PRECISE: Instead of "handsome", use "sharp jawline, high cheekbones".
   
-  Output JSON array with 'name' (generic) and 'description'.`;
+  Output JSON array with 'name' (generic "Subject 1" etc) and 'description'.`;
 
   try {
     const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash', // Switched to Flash for cost/speed
+        model: modelName, 
         contents: {
         parts: [imagePart, { text: prompt }],
         },
@@ -170,6 +203,15 @@ export async function analyzePhotoForCharacters(imagePart: Part, fileName: strin
         }
     });
 
+    if (onLogUsage) {
+        onLogUsage(
+            "Analyze Photo (Vision)", 
+            modelName, 
+            response.usageMetadata?.promptTokenCount || 0,
+            response.usageMetadata?.candidatesTokenCount || 0
+        );
+    }
+
     const parsed = JSON.parse(response.text.trim());
     return (Array.isArray(parsed) && parsed.length > 0) ? parsed : [{ name: 'Subject 1', description: 'Analysis unclear.' }];
   } catch (e: any) {
@@ -179,11 +221,12 @@ export async function analyzePhotoForCharacters(imagePart: Part, fileName: strin
   }
 }
 
-export async function optimizePrompt(userPrompt: string): Promise<string> {
+export async function optimizePrompt(userPrompt: string, onLogUsage?: UsageLogger): Promise<string> {
    const ai = getAI();
+   const modelName = 'gemini-3-pro-preview';
    try {
     const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash', // Switched to Flash
+        model: modelName, // Keep PRO for high-quality creative writing
         contents: `Act as a Director of Photography for a high-budget film. Rewrite the user's scene description into a "Cinematography Brief".
         
         Style Guide:
@@ -198,36 +241,34 @@ export async function optimizePrompt(userPrompt: string): Promise<string> {
         
         User Input: "${userPrompt}"`,
       });
+
+      if (onLogUsage) {
+        onLogUsage(
+            "Optimize Prompt (Text)", 
+            modelName, 
+            response.usageMetadata?.promptTokenCount || 0,
+            response.usageMetadata?.candidatesTokenCount || 0
+        );
+      }
+
       return response.text.trim();
    } catch (error) {
        throw cleanError(error);
    }
 }
 
-export async function generateRandomScenePrompt(): Promise<string> {
+export async function generateDynamicScenario(
+    theme: string, 
+    numCharacters: number,
+    onLogUsage?: UsageLogger
+): Promise<string> {
     const ai = getAI();
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash', // Switched to Flash
-            contents: `Generate a short, evocative description for a portrait setting.
-            Focus on lighting and mood (e.g., "Golden hour in a dusty library", "Neon noir rain", "Studio chiaroscuro").
-            Do not mention people. Just the scene.
-            
-            OUTPUT RULE: Return ONLY the scene description text. No chatter.`,
-        });
-        return response.text.trim();
-    } catch (error) {
-        throw cleanError(error);
-    }
-}
-
-export async function generateDynamicScenario(theme: string, numCharacters: number): Promise<string> {
-    const ai = getAI();
+    const modelName = 'gemini-3-pro-preview';
     const countStr = numCharacters === 1 ? "a solo portrait" : `a group photo of ${numCharacters} people`;
     
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash', // Switched to Flash
+            model: modelName, // Keep PRO
             contents: `Act as a Bold Creative Director. Write a highly detailed image generation prompt for ${countStr} based on the request: "${theme}".
 
             CRITICAL INSTRUCTIONS FOR SPECIFICITY:
@@ -256,6 +297,16 @@ export async function generateDynamicScenario(theme: string, numCharacters: numb
             
             Keep it under 60 words.`,
         });
+
+        if (onLogUsage) {
+            onLogUsage(
+                "Generate Scenario (Text)", 
+                modelName, 
+                response.usageMetadata?.promptTokenCount || 0,
+                response.usageMetadata?.candidatesTokenCount || 0
+            );
+        }
+
         return response.text.trim();
     } catch (error) {
         throw cleanError(error);
