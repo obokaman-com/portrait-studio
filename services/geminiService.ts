@@ -12,6 +12,39 @@ export const setGlobalApiKey = (key: string) => {
   dynamicApiKey = key;
 };
 
+// MODEL TIER MANAGEMENT
+export type ModelTier = 'premium' | 'balanced' | 'economy';
+let currentModelTier: ModelTier = 'balanced';
+
+export const setModelTier = (tier: ModelTier) => {
+  currentModelTier = tier;
+};
+
+// Helper to get the appropriate model based on tier and operation type
+const getModelForOperation = (operation: 'analysis' | 'optimization' | 'generation', overrideModel?: string): string => {
+  if (overrideModel) return overrideModel;
+
+  const modelMap = {
+    premium: {
+      analysis: 'gemini-3-pro-preview',
+      optimization: 'gemini-3-pro-preview',
+      generation: 'gemini-3-pro-image-preview'
+    },
+    balanced: {
+      analysis: 'gemini-2.5-flash',
+      optimization: 'gemini-3-pro-preview',
+      generation: 'gemini-3-pro-image-preview'
+    },
+    economy: {
+      analysis: 'gemini-2.5-flash',
+      optimization: 'gemini-2.5-flash',
+      generation: 'gemini-2.5-flash-image'
+    }
+  };
+
+  return modelMap[currentModelTier][operation];
+};
+
 // Helper to get a fresh AI instance with the current API key
 const getAI = () => {
   if (!dynamicApiKey) {
@@ -82,13 +115,13 @@ export async function generateSinglePortrait(
 
   const ai = getAI();
   const textPart = { text: prompt };
-  const modelName = modelOverride || 'gemini-3-pro-image-preview';
+  const modelName = getModelForOperation('generation', modelOverride);
 
   // Flash model uses simpler config (doesn't support imageSize)
   const isFlashModel = modelName.includes('flash');
   const imageConfig = isFlashModel
-    ? { aspectRatio: "3:4" } // Flash: only aspectRatio
-    : { aspectRatio: "3:4", imageSize: "1K" }; // Pro: full config
+    ? { aspectRatio: "4:3" } // Flash: only aspectRatio
+    : { aspectRatio: "4:3", imageSize: "1K" }; // Pro: full config
 
   try {
     const response = await ai.models.generateContent({
@@ -115,8 +148,8 @@ export async function generateSinglePortrait(
     // Note: Image generation usually charges per image, but we log tokens if available or 0
     if (onLogUsage) {
         onLogUsage(
-            "Generate Portrait (Image)", 
-            modelName, 
+            "Generate Portrait (Image)",
+            modelName,
             response.usageMetadata?.promptTokenCount || 0,
             response.usageMetadata?.candidatesTokenCount || 0
         );
@@ -177,7 +210,7 @@ export async function generateSinglePortrait(
     if (!parts || !Array.isArray(parts) || parts.length === 0) {
       throw new Error("Empty response from model.");
     }
-    
+
     for (const part of parts) {
       if (part.inlineData) {
           return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
@@ -198,14 +231,14 @@ export async function generateSinglePortrait(
 }
 
 export async function analyzePhotoForCharacters(
-    imagePart: Part, 
+    imagePart: Part,
     fileName: string,
     onLogUsage?: UsageLogger
 ): Promise<Omit<CharacterDetail, 'id' | 'isDescriptionLoading'>[]> {
   const ai = getAI();
-  const modelName = 'gemini-2.5-flash';
-  
-  // OPTIMIZATION: Using Flash as requested. It's fast and effective for physical descriptions.
+  const modelName = getModelForOperation('analysis');
+
+  // Uses tier-appropriate model for character analysis
   const prompt = `Analyze this photo to identify every distinct person.
   Create a concise, purely PHYSICAL description for character consistency in image generation.
   
@@ -218,7 +251,7 @@ export async function analyzePhotoForCharacters(
 
   try {
     const response = await ai.models.generateContent({
-        model: modelName, 
+        model: modelName,
         contents: {
         parts: [imagePart, { text: prompt }],
         },
@@ -240,8 +273,8 @@ export async function analyzePhotoForCharacters(
 
     if (onLogUsage) {
         onLogUsage(
-            "Analyze Photo (Vision)", 
-            modelName, 
+            "Analyze Photo (Vision)",
+            modelName,
             response.usageMetadata?.promptTokenCount || 0,
             response.usageMetadata?.candidatesTokenCount || 0
         );
@@ -258,10 +291,10 @@ export async function analyzePhotoForCharacters(
 
 export async function optimizePrompt(userPrompt: string, onLogUsage?: UsageLogger): Promise<string> {
    const ai = getAI();
-   const modelName = 'gemini-3-pro-preview';
+   const modelName = getModelForOperation('optimization');
    try {
     const response = await ai.models.generateContent({
-        model: modelName, // Keep PRO for high-quality creative writing
+        model: modelName, // Uses tier-appropriate model for prompt optimization
         contents: `Act as a Director of Photography for a high-budget film. Rewrite the user's scene description into a "Cinematography Brief".
         
         Style Guide:
@@ -279,8 +312,8 @@ export async function optimizePrompt(userPrompt: string, onLogUsage?: UsageLogge
 
       if (onLogUsage) {
         onLogUsage(
-            "Optimize Prompt (Text)", 
-            modelName, 
+            "Optimize Prompt (Text)",
+            modelName,
             response.usageMetadata?.promptTokenCount || 0,
             response.usageMetadata?.candidatesTokenCount || 0
         );
@@ -293,17 +326,17 @@ export async function optimizePrompt(userPrompt: string, onLogUsage?: UsageLogge
 }
 
 export async function generateDynamicScenario(
-    theme: string, 
+    theme: string,
     numCharacters: number,
     onLogUsage?: UsageLogger
 ): Promise<string> {
     const ai = getAI();
-    const modelName = 'gemini-3-pro-preview';
+    const modelName = getModelForOperation('optimization');
     const countStr = numCharacters === 1 ? "a solo portrait" : `a group photo of ${numCharacters} people`;
-    
+
     try {
         const response = await ai.models.generateContent({
-            model: modelName, // Keep PRO
+            model: modelName, // Uses tier-appropriate model for scenario generation
             contents: `Act as a Bold Creative Director. Write a highly detailed image generation prompt for ${countStr} based on the request: "${theme}".
 
             CRITICAL INSTRUCTIONS FOR SPECIFICITY:
@@ -335,8 +368,8 @@ export async function generateDynamicScenario(
 
         if (onLogUsage) {
             onLogUsage(
-                "Generate Scenario (Text)", 
-                modelName, 
+                "Generate Scenario (Text)",
+                modelName,
                 response.usageMetadata?.promptTokenCount || 0,
                 response.usageMetadata?.candidatesTokenCount || 0
             );
@@ -357,10 +390,10 @@ export async function constructPromptPayload(
   const imageParts: Part[] = await Promise.all(photos.map(async photo => {
     // We utilize the optimized resizing function here
     const base64WithPrefix = await resizeImageToBase64(photo.file, 1536);
-    
+
     // Remove "data:image/xyz;base64," prefix for the API
     const base64Data = base64WithPrefix.split(',')[1];
-    
+
     return {
       inlineData: {
         mimeType: photo.file.type,
@@ -369,7 +402,7 @@ export async function constructPromptPayload(
     }
   }));
 
-  const allCharacters = photos.flatMap((photo, photoIndex) => 
+  const allCharacters = photos.flatMap((photo, photoIndex) =>
     photo.characters.map(char => ({ ...char, photoIndex }))
   );
 
@@ -377,7 +410,7 @@ export async function constructPromptPayload(
     `[REF_IMG_${index + 1}]`
   ).join(' ');
 
-  const characterManifest = allCharacters.map(char => 
+  const characterManifest = allCharacters.map(char =>
     `Subject (${char.name}) ID_REF_IMG_${char.photoIndex + 1}: ${char.description}`
   ).join('\n');
 

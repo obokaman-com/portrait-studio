@@ -2,7 +2,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { UploadedPhoto, CharacterDetail, GenerationResult, UsageLog } from './types';
 import { resizeImageToBase64, createAndDownloadZip } from './utils/fileUtils';
-import { generateSinglePortrait, analyzePhotoForCharacters, optimizePrompt, constructPromptPayload, generateDynamicScenario, setGlobalApiKey } from './services/geminiService';
+import { generateSinglePortrait, analyzePhotoForCharacters, optimizePrompt, constructPromptPayload, generateDynamicScenario, setGlobalApiKey, setModelTier as setGeminiModelTier } from './services/geminiService';
 import FileUpload from './components/FileUpload';
 import ImageGrid from './components/ImageGrid';
 import Spinner from './components/Spinner';
@@ -13,6 +13,9 @@ import StyleSelector from './components/StyleSelector';
 
 // Track where the key came from for UI feedback
 type ApiKeySource = 'env' | 'storage' | 'studio' | null;
+
+// Model tier selection
+type ModelTier = 'premium' | 'balanced' | 'economy';
 
 const App: React.FC = () => {
   const [photos, setPhotos] = useState<UploadedPhoto[]>([]);
@@ -29,7 +32,7 @@ const App: React.FC = () => {
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [selectedError, setSelectedError] = useState<GenerationResult | null>(null);
 
-  const [numImages, setNumImages] = useState<2 | 4 | 8>(4);
+  const [numImages, setNumImages] = useState<2 | 4 | 8>(8);
   const [hasApiKey, setHasApiKey] = useState<boolean>(false);
   const [apiKeySource, setApiKeySource] = useState<ApiKeySource>(null);
   const [isCheckingKey, setIsCheckingKey] = useState<boolean>(true);
@@ -44,15 +47,33 @@ const App: React.FC = () => {
 
   // Lightbox State: Using Index instead of String for easier navigation
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
+  const [showVariationsDropdown, setShowVariationsDropdown] = useState<boolean>(false);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [modelTier, setModelTier] = useState<ModelTier>('balanced');
 
   // Refs
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null); // Ref to trigger upload from right panel
+  const variationsDropdownRef = useRef<HTMLDivElement>(null);
+  const variationsButtonRef = useRef<HTMLButtonElement>(null);
   
   // CACHE REFS for Optimization
   const lastUsedScenePromptRef = useRef<string>('');
   const cachedOptimizedPromptRef = useRef<string>('');
   const lastGeneratedPayloadRef = useRef<{ imageParts: any[], fullPrompt: string } | null>(null);
+
+  // Load model tier preference from localStorage
+  useEffect(() => {
+    const savedTier = localStorage.getItem('obo_model_tier') as ModelTier | null;
+    if (savedTier && ['premium', 'balanced', 'economy'].includes(savedTier)) {
+      setModelTier(savedTier);
+      setGeminiModelTier(savedTier);
+    } else {
+      // Set default tier in Gemini service
+      setGeminiModelTier('balanced');
+    }
+  }, []);
 
   useEffect(() => {
     const checkKey = async () => {
@@ -96,6 +117,24 @@ const App: React.FC = () => {
     checkKey();
   }, []);
 
+  // Close variations dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const isClickInButton = variationsButtonRef.current?.contains(target);
+      const isClickInDropdown = variationsDropdownRef.current?.contains(target);
+
+      if (!isClickInButton && !isClickInDropdown) {
+        setShowVariationsDropdown(false);
+      }
+    };
+
+    if (showVariationsDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showVariationsDropdown]);
+
   // Keyboard navigation for Lightbox
   useEffect(() => {
     if (selectedImageIndex === null) return;
@@ -106,11 +145,11 @@ const App: React.FC = () => {
       if (e.key === 'Escape') {
         setSelectedImageIndex(null);
       } else if (e.key === 'ArrowRight') {
-        setSelectedImageIndex((prev) => 
+        setSelectedImageIndex((prev) =>
           prev !== null ? (prev + 1) % successImages.length : null
         );
       } else if (e.key === 'ArrowLeft') {
-        setSelectedImageIndex((prev) => 
+        setSelectedImageIndex((prev) =>
           prev !== null ? (prev - 1 + successImages.length) % successImages.length : null
         );
       }
@@ -595,10 +634,9 @@ ${fullGeneratedPrompt}
 
       if (failedResults.length === 0) return;
 
-      // Retry all failed images sequentially to avoid overwhelming the API
-      for (const failedResult of failedResults) {
-          await handleRetryImage(failedResult);
-      }
+      // Retry all failed images concurrently (parallel execution like initial generation)
+      const retryPromises = failedResults.map(failedResult => handleRetryImage(failedResult));
+      await Promise.allSettled(retryPromises);
   }, [generationResults, handleRetryImage]);
 
   const isCharacterAnalysisPending = photos.some(p => p.characters.some(c => c.isDescriptionLoading));
@@ -731,13 +769,32 @@ ${fullGeneratedPrompt}
              </a>
             
              {/* STATS BUTTON */}
-             <button 
+             <button
                 onClick={() => setShowUsageLogs(true)}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 text-gray-400 hover:text-white hover:bg-white/10 transition-colors text-[10px]"
              >
                 <ChartBarIcon className="w-3 h-3" />
                 <span className="font-mono">
                     ${usageLogs.reduce((acc, log) => acc + log.cost, 0).toFixed(4)}
+                </span>
+             </button>
+
+             {/* SETTINGS BUTTON */}
+             <button
+                onClick={() => setShowSettings(true)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 hover:bg-white/10 transition-colors group"
+                title="Settings"
+             >
+                <svg className="w-4 h-4 text-gray-400 group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span className={`text-[10px] font-medium ${
+                    modelTier === 'premium' ? 'text-purple-400' :
+                    modelTier === 'economy' ? 'text-green-400' :
+                    'text-sky-400'
+                }`}>
+                    {modelTier === 'premium' ? 'Premium' : modelTier === 'economy' ? 'Economy' : 'Balanced'}
                 </span>
              </button>
 
@@ -894,61 +951,121 @@ ${fullGeneratedPrompt}
             
             {/* Style/Scenario Selectors */}
             <StyleSelector onSelect={handleSelectScenario} isGenerating={isScenarioGenerating} />
-
-            <div className="pt-2 space-y-4">
-                <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500 font-medium">Variations</span>
-                    <div className="w-48">
-                        <GenerationOptions selected={numImages} onChange={setNumImages} />
-                    </div>
-                </div>
-
-                <Button
-                    onClick={isGenerating ? undefined : handleGenerate}
-                    disabled={(isGenerating ? false : (totalCharacters === 0 || !scenePrompt.trim() || isCharacterAnalysisPending))}
-                    className={`w-full shadow-lg shadow-sky-900/20 py-4 ${isGenerating ? 'cursor-default' : ''}`}
-                >
-                    {isGenerating ? (
-                         <div className="flex items-center justify-center gap-3">
-                            {/* Stop Control - Refined Always-Visible UI */}
-                            <div 
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleCancel();
-                                }}
-                                className="group/stop relative w-7 h-7 flex items-center justify-center cursor-pointer hover:scale-105 transition-transform"
-                                title="Cancel Generation"
-                            >
-                                {/* Spinner Ring - Visible */}
-                                <div className="absolute inset-0 border-[3px] border-white/20 border-t-white rounded-full animate-spin" />
-                                
-                                {/* Stop Square - Visible */}
-                                <div className="w-2.5 h-2.5 bg-white rounded-[1px] group-hover/stop:bg-red-500 transition-colors shadow-sm" />
-                            </div>
-                            <span className="text-gray-200 animate-pulse font-medium tracking-wide">{loadingMessage}</span>
-                         </div>
-                    ) : (
-                        <span className="flex items-center gap-2">
-                             <SparklesIcon className="w-5 h-5" /> Generate Portraits
-                        </span>
-                    )}
-                </Button>
-                
-                {globalError && (
-                    <div className="text-xs text-red-400 text-center bg-red-900/10 border border-red-900/30 p-2 rounded-lg">
-                        {globalError}
-                    </div>
-                )}
-            </div>
           </div>
         </div>
 
         {/* RIGHT PANEL: Lightbox / Results */}
         <div className="flex-1 h-full min-h-[500px] bg-[#0a0a0a] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl">
-            
+
+            {/* TOOLBAR - Actions & Controls */}
+            <div className="flex-shrink-0 p-4 bg-black/40 backdrop-blur-md border-b border-white/5 flex flex-wrap items-center gap-3">
+                {/* Action Buttons */}
+                <div className="flex items-center gap-2 flex-wrap">
+                    {/* Generate/Cancel Split Button - Always visible when ready */}
+                    {(totalCharacters > 0 && scenePrompt.trim()) && (
+                        <div className="relative" ref={variationsDropdownRef}>
+                            {isGenerating ? (
+                                <Button
+                                    onClick={undefined}
+                                    disabled={false}
+                                    className="shadow-lg shadow-sky-900/20 cursor-default"
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <div
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleCancel();
+                                            }}
+                                            className="group/stop relative w-5 h-5 flex items-center justify-center cursor-pointer"
+                                            title="Cancel Generation"
+                                        >
+                                            <div className="absolute inset-0 border-[2px] border-white/20 border-t-white rounded-full animate-spin" />
+                                            <div className="w-2 h-2 bg-white rounded-[1px] group-hover/stop:bg-red-500 transition-colors" />
+                                        </div>
+                                        <span className="text-sm">{loadingMessage}</span>
+                                    </div>
+                                </Button>
+                            ) : (
+                                <>
+                                    {/* Compact Split Button */}
+                                    <button
+                                        ref={variationsButtonRef}
+                                        onClick={handleGenerate}
+                                        disabled={isCharacterAnalysisPending}
+                                        className="group relative px-4 py-2 bg-gradient-to-r from-sky-500 to-purple-600 hover:from-sky-400 hover:to-purple-500 disabled:from-gray-700 disabled:to-gray-600 disabled:cursor-not-allowed text-white font-medium transition-all flex items-center gap-2 rounded-full shadow-lg shadow-sky-900/20 pr-10"
+                                    >
+                                        <SparklesIcon className="w-4 h-4" />
+                                        <span>Generate {numImages}</span>
+
+                                        {/* Integrated dropdown trigger */}
+                                        <div
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (variationsButtonRef.current) {
+                                                    const rect = variationsButtonRef.current.getBoundingClientRect();
+                                                    setDropdownPosition({
+                                                        top: rect.bottom + 8,
+                                                        left: rect.left
+                                                    });
+                                                }
+                                                setShowVariationsDropdown(!showVariationsDropdown);
+                                            }}
+                                            className="absolute right-0 top-0 bottom-0 px-2 flex items-center justify-center border-l border-white/20 hover:bg-white/10 rounded-r-full transition-colors cursor-pointer"
+                                        >
+                                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                            </svg>
+                                        </div>
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Download All - Only if at least one success */}
+                    {!isGenerating && generationResults.some(r => r.status === 'success') && (
+                        <Button
+                            onClick={handleDownloadZip}
+                            className="bg-white text-black hover:bg-gray-200"
+                        >
+                            <DownloadIcon className="w-4 h-4 mr-1" /> Download
+                        </Button>
+                    )}
+
+                    {/* Retry All Failed - Only if there are errors */}
+                    {!isGenerating && generationResults.some(r => r.status === 'error') && (
+                        <button
+                            onClick={handleRetryAllFailed}
+                            className="px-4 py-2 rounded-full border border-yellow-500/30 bg-yellow-900/10 text-sm font-medium hover:bg-yellow-900/20 transition-colors text-yellow-400 hover:text-yellow-300 flex items-center gap-2"
+                        >
+                            <RefreshIcon className="w-4 h-4" />
+                            Retry Failed
+                        </button>
+                    )}
+
+                    {/* Regenerate - Only if results exist and not generating */}
+                    {!isGenerating && generationResults.length > 0 && (
+                        <button
+                            onClick={handleGenerate}
+                            className="px-4 py-2 rounded-full border border-white/10 text-sm font-medium hover:bg-white/5 transition-colors text-white flex items-center gap-2"
+                        >
+                            <RefreshIcon className="w-4 h-4" />
+                            Regenerate
+                        </button>
+                    )}
+                </div>
+
+                {/* Global Error - Full width row below if present */}
+                {globalError && (
+                    <div className="w-full text-xs text-red-400 text-center bg-red-900/10 border border-red-900/30 p-2 rounded-lg">
+                        {globalError}
+                    </div>
+                )}
+            </div>
+
             {/* Empty State - VISUAL FLOW DIAGRAM (DYNAMIC) */}
             {!isGenerating && generationResults.length === 0 && !globalError && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 opacity-60">
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 opacity-60">
                     <div className="flex items-center gap-4 mb-8">
                          {/* Step 1: Upload (Active if no photos) */}
                          <div 
@@ -1023,60 +1140,23 @@ ${fullGeneratedPrompt}
                 />
             </div>
 
-            {/* Actions Footer (Floating inside right panel) */}
-            {(generationResults.length > 0 || isPromptOptimizing) && (
-                <div className="p-4 bg-black/60 backdrop-blur-md border-t border-white/5 flex flex-col gap-3">
-                   {/* Prompt Details Section */}
-                   {(isPromptOptimizing || fullGeneratedPrompt) && (
-                        <details className="group" open={isPromptOptimizing}>
-                            <summary className="list-none cursor-pointer text-[10px] text-gray-500 hover:text-gray-300 flex items-center gap-2 transition-colors">
-                                <WandIcon className="w-3 h-3" /> 
-                                {isPromptOptimizing ? 'Optimizing System Prompt...' : 'View System Prompt'}
-                            </summary>
-                            <div className="mt-2 p-3 bg-black/50 rounded-lg border border-white/5 text-[10px] font-mono text-gray-500 leading-relaxed overflow-x-auto min-h-[60px]">
-                                {isPromptOptimizing ? (
-                                    <div className="flex items-center gap-2 h-full">
-                                        <span className="w-1.5 h-1.5 bg-sky-500 rounded-full animate-pulse"/>
-                                        <span className="text-gray-600">Analyzing characters and scene requirements...</span>
-                                    </div>
-                                ) : fullGeneratedPrompt}
-                            </div>
-                        </details>
-                   )}
-                   
-                   {/* Action Buttons */}
-                   {!isGenerating && generationResults.length > 0 && (
-                       <div className="flex gap-3">
-                            {/* Download All - Only if at least one success */}
-                            {generationResults.some(r => r.status === 'success') && (
-                                <Button
-                                    onClick={handleDownloadZip}
-                                    className="flex-1 bg-white text-black hover:bg-gray-200"
-                                >
-                                    <DownloadIcon className="w-4 h-4 mr-2" /> Download All (ZIP)
-                                </Button>
-                            )}
-
-                            {/* Retry All Failed - Only if there are errors */}
-                            {generationResults.some(r => r.status === 'error') && (
-                                <button
-                                    onClick={handleRetryAllFailed}
-                                    className="px-6 py-2 rounded-full border border-yellow-500/30 bg-yellow-900/10 text-sm font-medium hover:bg-yellow-900/20 transition-colors text-yellow-400 hover:text-yellow-300 flex items-center gap-2"
-                                >
-                                    <RefreshIcon className="w-4 h-4" />
-                                    Retry All Failed
-                                </button>
-                            )}
-
-                            {/* Regenerate All */}
-                            <button
-                                onClick={handleGenerate}
-                                className="px-6 py-2 rounded-full border border-white/10 text-sm font-medium hover:bg-white/5 transition-colors text-white"
-                            >
-                                Regenerate
-                            </button>
-                       </div>
-                   )}
+            {/* System Prompt Footer (Optional Details) */}
+            {(isPromptOptimizing || fullGeneratedPrompt) && (
+                <div className="p-4 bg-black/60 backdrop-blur-md border-t border-white/5">
+                   <details className="group" open={isPromptOptimizing}>
+                        <summary className="list-none cursor-pointer text-[10px] text-gray-500 hover:text-gray-300 flex items-center gap-2 transition-colors">
+                            <WandIcon className="w-3 h-3" />
+                            {isPromptOptimizing ? 'Optimizing System Prompt...' : 'View System Prompt'}
+                        </summary>
+                        <div className="mt-2 p-3 bg-black/50 rounded-lg border border-white/5 text-[10px] font-mono text-gray-500 leading-relaxed overflow-x-auto min-h-[60px]">
+                            {isPromptOptimizing ? (
+                                <div className="flex items-center gap-2 h-full">
+                                    <span className="w-1.5 h-1.5 bg-sky-500 rounded-full animate-pulse"/>
+                                    <span className="text-gray-600">Analyzing characters and scene requirements...</span>
+                                </div>
+                            ) : fullGeneratedPrompt}
+                        </div>
+                    </details>
                 </div>
             )}
         </div>
@@ -1164,6 +1244,127 @@ ${fullGeneratedPrompt}
                         Close
                      </button>
                  </div>
+            </div>
+        </div>
+      )}
+
+      {/* --- SETTINGS MODAL --- */}
+      {showSettings && (
+        <div
+            className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setShowSettings(false)}
+        >
+            <div className="bg-[#0f0f0f] border border-white/10 rounded-2xl max-w-md w-full p-6 relative shadow-2xl" onClick={e => e.stopPropagation()}>
+                <button
+                    onClick={() => setShowSettings(false)}
+                    className="absolute top-4 right-4 text-gray-500 hover:text-white"
+                >
+                    <CloseIcon className="w-5 h-5" />
+                </button>
+
+                <h3 className="text-xl font-semibold text-white mb-6">Settings</h3>
+
+                <div className="space-y-6">
+                    {/* Model Tier Selection */}
+                    <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-3">Model Tier</label>
+                        <div className="space-y-2">
+                            {/* Premium */}
+                            <button
+                                onClick={() => {
+                                    setModelTier('premium');
+                                    setGeminiModelTier('premium');
+                                    localStorage.setItem('obo_model_tier', 'premium');
+                                }}
+                                className={`w-full p-4 rounded-lg border transition-all text-left ${
+                                    modelTier === 'premium'
+                                        ? 'border-purple-500 bg-purple-500/10'
+                                        : 'border-white/10 bg-white/5 hover:border-white/20'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="font-semibold text-white">Premium</span>
+                                    {modelTier === 'premium' && (
+                                        <span className="text-purple-400 text-sm">✓ Active</span>
+                                    )}
+                                </div>
+                                <p className="text-xs text-gray-400 mb-2">Maximum quality everywhere</p>
+                                <ul className="text-[10px] text-gray-500 space-y-1">
+                                    <li>• Analysis: Gemini 3 Pro</li>
+                                    <li>• Prompt Optimization: Gemini 3 Pro</li>
+                                    <li>• Image Generation: Gemini 3 Pro Image</li>
+                                    <li>• Retries: Gemini 3 Pro Image</li>
+                                </ul>
+                            </button>
+
+                            {/* Balanced */}
+                            <button
+                                onClick={() => {
+                                    setModelTier('balanced');
+                                    setGeminiModelTier('balanced');
+                                    localStorage.setItem('obo_model_tier', 'balanced');
+                                }}
+                                className={`w-full p-4 rounded-lg border transition-all text-left ${
+                                    modelTier === 'balanced'
+                                        ? 'border-sky-500 bg-sky-500/10'
+                                        : 'border-white/10 bg-white/5 hover:border-white/20'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="font-semibold text-white">Balanced</span>
+                                    {modelTier === 'balanced' && (
+                                        <span className="text-sky-400 text-sm">✓ Active</span>
+                                    )}
+                                    <span className="text-[10px] text-green-400 bg-green-900/20 px-2 py-0.5 rounded-full">Recommended</span>
+                                </div>
+                                <p className="text-xs text-gray-400 mb-2">Best quality/cost ratio</p>
+                                <ul className="text-[10px] text-gray-500 space-y-1">
+                                    <li>• Analysis: Gemini 2.5 Flash</li>
+                                    <li>• Prompt Optimization: Gemini 3 Pro</li>
+                                    <li>• Image Generation: Gemini 3 Pro Image</li>
+                                    <li>• Retries (429): Gemini 2.5 Flash Image</li>
+                                </ul>
+                            </button>
+
+                            {/* Economy */}
+                            <button
+                                onClick={() => {
+                                    setModelTier('economy');
+                                    setGeminiModelTier('economy');
+                                    localStorage.setItem('obo_model_tier', 'economy');
+                                }}
+                                className={`w-full p-4 rounded-lg border transition-all text-left ${
+                                    modelTier === 'economy'
+                                        ? 'border-green-500 bg-green-500/10'
+                                        : 'border-white/10 bg-white/5 hover:border-white/20'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="font-semibold text-white">Economy</span>
+                                    {modelTier === 'economy' && (
+                                        <span className="text-green-400 text-sm">✓ Active</span>
+                                    )}
+                                </div>
+                                <p className="text-xs text-gray-400 mb-2">Lowest cost, faster quota recovery</p>
+                                <ul className="text-[10px] text-gray-500 space-y-1">
+                                    <li>• Analysis: Gemini 2.5 Flash</li>
+                                    <li>• Prompt Optimization: Gemini 2.5 Flash</li>
+                                    <li>• Image Generation: Gemini 2.5 Flash Image</li>
+                                    <li>• Retries: Gemini 2.5 Flash Image</li>
+                                </ul>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="mt-6 pt-4 border-t border-white/5 flex justify-end">
+                    <button
+                        onClick={() => setShowSettings(false)}
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-sm text-white transition-colors"
+                    >
+                        Close
+                    </button>
+                </div>
             </div>
         </div>
       )}
@@ -1267,6 +1468,43 @@ ${fullGeneratedPrompt}
             </div>
           );
       })()}
+
+      {/* Variations Dropdown - Rendered at root level with fixed positioning */}
+      {showVariationsDropdown && dropdownPosition && (
+        <div
+          ref={variationsDropdownRef}
+          style={{
+            position: 'fixed',
+            top: `${dropdownPosition.top}px`,
+            left: `${dropdownPosition.left}px`,
+            zIndex: 9999
+          }}
+          className="bg-[#1a1a1a] border border-white/10 rounded-lg shadow-xl overflow-hidden min-w-[130px]"
+        >
+          {[2, 4, 8].map((num) => (
+            <button
+              key={num}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setNumImages(num as 2 | 4 | 8);
+                setShowVariationsDropdown(false);
+              }}
+              className={`w-full px-4 py-2.5 text-sm text-left transition-colors flex items-center justify-between cursor-pointer ${
+                numImages === num
+                  ? 'bg-sky-500/20 text-sky-400'
+                  : 'text-gray-300 hover:bg-white/5'
+              }`}
+            >
+              <span>{num} variations</span>
+              {numImages === num && (
+                <span className="text-sky-400">✓</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
 
     </div>
   );
