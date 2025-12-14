@@ -61,6 +61,7 @@ const App: React.FC = () => {
   // CACHE REFS for Optimization
   const lastUsedScenePromptRef = useRef<string>('');
   const cachedOptimizedPromptRef = useRef<string>('');
+  const cachedAspectRatioRef = useRef<string>('3:4');
   const lastGeneratedPayloadRef = useRef<{ imageParts: any[], fullPrompt: string } | null>(null);
 
   // Load model tier preference from localStorage
@@ -425,31 +426,36 @@ const App: React.FC = () => {
     
     try {
       let optimizedPrompt = '';
+      let aspectRatio = '3:4'; // Default aspect ratio
 
       // 2. Optimization Phase (With Caching)
       if (scenePrompt === lastUsedScenePromptRef.current && cachedOptimizedPromptRef.current) {
           // Cache Hit! Skip optimization
-          console.log("Using cached optimized prompt");
+          console.log("Using cached optimized prompt and aspect ratio");
           optimizedPrompt = cachedOptimizedPromptRef.current;
-          setFullGeneratedPrompt(optimizedPrompt); // Note: We might want to store full constructed prompt in cache too, but optimization is the expensive text part
+          aspectRatio = cachedAspectRatioRef.current;
+          setFullGeneratedPrompt(optimizedPrompt);
       } else {
           // Cache Miss - Call API
           setLoadingMessage('Optimizing scene prompt...');
           setIsPromptOptimizing(true);
-          optimizedPrompt = await optimizePrompt(scenePrompt, handleLogUsage);
+          const result = await optimizePrompt(scenePrompt, handleLogUsage);
+          optimizedPrompt = result.optimizedPrompt;
+          aspectRatio = result.aspectRatio;
           if (controller.signal.aborted) return;
-          
+
           // Update Cache
           lastUsedScenePromptRef.current = scenePrompt;
           cachedOptimizedPromptRef.current = optimizedPrompt;
+          cachedAspectRatioRef.current = aspectRatio;
       }
-      
+
       // We always reconstruct payload because photos/characters might have changed even if scene didn't
       const { imageParts, fullPrompt } = await constructPromptPayload(photos, optimizedPrompt);
       if (controller.signal.aborted) return;
 
-      // Store payload for retry functionality
-      lastGeneratedPayloadRef.current = { imageParts, fullPrompt };
+      // Store payload for retry functionality (now including aspect ratio)
+      lastGeneratedPayloadRef.current = { imageParts, fullPrompt, aspectRatio } as any;
 
       setFullGeneratedPrompt(fullPrompt);
       setIsPromptOptimizing(false);
@@ -458,7 +464,7 @@ const App: React.FC = () => {
       // 3. Parallel Execution with Individual Updates
       // All images use the same optimized prompt (no variations on initial generation)
       const promises = placeholders.map((placeholder) => {
-          return generateSinglePortrait(imageParts, fullPrompt, controller.signal, handleLogUsage)
+          return generateSinglePortrait(imageParts, fullPrompt, controller.signal, handleLogUsage, undefined, aspectRatio)
             .then((imageUrl) => {
                 if (controller.signal.aborted) return;
                 setGenerationResults(prev => prev.map(res => 
@@ -583,7 +589,7 @@ ${fullGeneratedPrompt}
           return;
       }
 
-      const { imageParts, fullPrompt } = lastGeneratedPayloadRef.current;
+      const { imageParts, fullPrompt, aspectRatio } = lastGeneratedPayloadRef.current as any;
 
       // Find the index of the failed result to determine retry count
       const resultIndex = generationResults.findIndex(r => r.id === failedResult.id);
@@ -615,7 +621,7 @@ ${fullGeneratedPrompt}
       ));
 
       try {
-          const imageUrl = await generateSinglePortrait(imageParts, promptVariation, undefined, handleLogUsage, modelToUse);
+          const imageUrl = await generateSinglePortrait(imageParts, promptVariation, undefined, handleLogUsage, modelToUse, aspectRatio || '3:4');
 
           setGenerationResults(prev => prev.map(res =>
               res.id === failedResult.id ? { ...res, status: 'success', imageUrl } : res

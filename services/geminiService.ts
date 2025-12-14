@@ -21,22 +21,25 @@ export const setModelTier = (tier: ModelTier) => {
 };
 
 // Helper to get the appropriate model based on tier and operation type
-const getModelForOperation = (operation: 'analysis' | 'optimization' | 'generation', overrideModel?: string): string => {
+const getModelForOperation = (operation: 'analysis' | 'scenario' | 'optimization' | 'generation', overrideModel?: string): string => {
   if (overrideModel) return overrideModel;
 
   const modelMap = {
     premium: {
       analysis: 'gemini-3-pro-preview',
+      scenario: 'gemini-3-pro-preview',
       optimization: 'gemini-3-pro-preview',
       generation: 'gemini-3-pro-image-preview'
     },
     balanced: {
       analysis: 'gemini-2.5-flash',
+      scenario: 'gemini-2.5-flash',
       optimization: 'gemini-3-pro-preview',
       generation: 'gemini-3-pro-image-preview'
     },
     economy: {
       analysis: 'gemini-2.5-flash',
+      scenario: 'gemini-2.5-flash',
       optimization: 'gemini-2.5-flash',
       generation: 'gemini-2.5-flash-image'
     }
@@ -107,7 +110,8 @@ export async function generateSinglePortrait(
     prompt: string,
     signal?: AbortSignal,
     onLogUsage?: UsageLogger,
-    modelOverride?: string
+    modelOverride?: string,
+    aspectRatio: string = "3:4"
 ): Promise<string> {
   if (signal?.aborted) {
     throw new Error("Cancelled");
@@ -120,8 +124,8 @@ export async function generateSinglePortrait(
   // Flash model uses simpler config (doesn't support imageSize)
   const isFlashModel = modelName.includes('flash');
   const imageConfig = isFlashModel
-    ? { aspectRatio: "4:3" } // Flash: only aspectRatio
-    : { aspectRatio: "4:3", imageSize: "1K" }; // Pro: full config
+    ? { aspectRatio } // Flash: only aspectRatio
+    : { aspectRatio, imageSize: "1K" }; // Pro: full config
 
   try {
     const response = await ai.models.generateContent({
@@ -289,24 +293,33 @@ export async function analyzePhotoForCharacters(
   }
 }
 
-export async function optimizePrompt(userPrompt: string, onLogUsage?: UsageLogger): Promise<string> {
+export async function optimizePrompt(userPrompt: string, onLogUsage?: UsageLogger): Promise<{ optimizedPrompt: string, aspectRatio: string }> {
    const ai = getAI();
    const modelName = getModelForOperation('optimization');
    try {
     const response = await ai.models.generateContent({
         model: modelName, // Uses tier-appropriate model for prompt optimization
-        contents: `Act as a Director of Photography for a high-budget film. Rewrite the user's scene description into a "Cinematography Brief".
-        
+        contents: `Act as a Director of Photography for a high-budget film. Rewrite the user's scene description into a "Cinematography Brief" and determine the optimal aspect ratio.
+
         Style Guide:
         - Use terminology like "Kodak Portra 400", "Arri Alexa", "85mm prime lens", "f/1.8", "soft volumetric lighting".
         - Emphasize TEXTURE: "film grain", "sharp focus on eyes", "atmospheric depth".
         - Avoid generic words like "beautiful" or "cool". Be technical and sensory.
-        
-        CRITICAL OUTPUT RULE: 
-        - Output ONLY the rewritten brief text. 
-        - Do NOT write "Here is the brief" or "Certainly". 
-        - Just return the description.
-        
+
+        Aspect Ratio Selection:
+        - "9:16" (vertical) → Magazine covers, full-body portraits, vertical compositions, phone wallpapers
+        - "3:4" (portrait) → Classic headshots, traditional portraits, standing subjects
+        - "1:1" (square) → Instagram, group shots, symmetrical compositions
+        - "4:3" (landscape) → Small groups, seated portraits, casual scenes
+        - "16:9" (wide) → Panoramic vistas, large groups, cinematic wide shots, landscapes
+        - User can explicitly request format (e.g., "vertical", "horizontal", "square", "panoramic")
+
+        CRITICAL OUTPUT RULE:
+        - Return a JSON object with exactly this structure: {"aspectRatio": "X:X", "prompt": "your optimized prompt here"}
+        - Do NOT include markdown code blocks, backticks, or any other formatting
+        - Do NOT write "Here is the brief" or "Certainly"
+        - Just return the raw JSON object
+
         User Input: "${userPrompt}"`,
       });
 
@@ -319,7 +332,23 @@ export async function optimizePrompt(userPrompt: string, onLogUsage?: UsageLogge
         );
       }
 
-      return response.text.trim();
+      // Parse JSON response
+      const text = response.text.trim();
+      let parsed;
+      try {
+        // Remove potential markdown code blocks
+        const cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
+        parsed = JSON.parse(cleaned);
+      } catch (e) {
+        console.error("Failed to parse aspect ratio response:", text);
+        // Fallback to default
+        return { optimizedPrompt: text, aspectRatio: "3:4" };
+      }
+
+      return {
+        optimizedPrompt: parsed.prompt || text,
+        aspectRatio: parsed.aspectRatio || "3:4"
+      };
    } catch (error) {
        throw cleanError(error);
    }
@@ -331,7 +360,7 @@ export async function generateDynamicScenario(
     onLogUsage?: UsageLogger
 ): Promise<string> {
     const ai = getAI();
-    const modelName = getModelForOperation('optimization');
+    const modelName = getModelForOperation('scenario');
     const countStr = numCharacters === 1 ? "a solo portrait" : `a group photo of ${numCharacters} people`;
 
     try {
