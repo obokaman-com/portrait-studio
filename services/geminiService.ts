@@ -26,16 +26,16 @@ const getModelForOperation = (operation: 'analysis' | 'scenario' | 'optimization
 
   const modelMap = {
     premium: {
-      analysis: 'gemini-3-pro-preview',
-      scenario: 'gemini-3-pro-preview',
-      optimization: 'gemini-3-pro-preview',
-      generation: 'gemini-3-pro-image-preview'
+      analysis: 'gemini-3.1-pro-preview',
+      scenario: 'gemini-3.1-pro-preview',
+      optimization: 'gemini-3.1-pro-preview',
+      generation: 'gemini-3-pro-image'
     },
     balanced: {
       analysis: 'gemini-2.5-flash',
       scenario: 'gemini-2.5-flash',
-      optimization: 'gemini-3-pro-preview',
-      generation: 'gemini-3-pro-image-preview'
+      optimization: 'gemini-3.1-pro-preview',
+      generation: 'gemini-3-pro-image'
     },
     economy: {
       analysis: 'gemini-2.5-flash',
